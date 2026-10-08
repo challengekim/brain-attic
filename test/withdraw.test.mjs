@@ -97,3 +97,21 @@ test('review --dry-run withdraws nothing', async () => {
   await review(ctx, { now: NOW, dryRun: true });
   assert.equal(getProposal(ctx.vault, b.id).status, 'pending');
 });
+
+test('review re-run: an item that is 미분류 (runner failure) or missing does not withdraw its card', async () => {
+  const ctx = testCtx({ config: { triage: { include: [] }, notifiers: [], audit: { paths: [] } } });
+  ensureSkeleton(ctx.vault);
+  const week = isoWeek(NOW);
+  const first = new Date(NOW.getTime() - 7 * 60000);
+  const u = createProposal(ctx.vault, teach('U'), first).proposal;
+  const m = createProposal(ctx.vault, teach('M'), first).proposal;
+  const tri = { week, generatedAt: new Date(Date.now() + 3600000).toISOString(), errors: [], counts: { a: 1, b: 0, c: 0, d: 0, unclassified: 1 }, items: [
+    { id: 'U', title: 'U', url: 'https://e.test/U', source: 'Feed', class: 'unclassified', project: null, reason: '주간 상한 초과 — 분류하지 않음' },
+    { id: 'Z', title: 'Z', url: 'https://e.test/Z', source: 'Feed', class: 'a', project: null, reason: 'r' },
+  ] };
+  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify(tri));
+  const r = await review(ctx, { now: NOW });
+  assert.equal(getProposal(ctx.vault, u.id).status, 'pending');
+  assert.equal(getProposal(ctx.vault, m.id).status, 'pending');
+  assert.deepEqual(r.withdrawn, []);
+});
