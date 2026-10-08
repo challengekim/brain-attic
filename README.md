@@ -175,8 +175,8 @@ One-way: `stdout`, `macos`, `discord {webhookEnv}`, `slack {webhookEnv}`, `teleg
 Two-way:
 
 * `decision-api {baseUrl, tokenEnv, kind:"knowledge"}`
-  * `POST {baseUrl}/api/agent-decisions/sync` with `{changeId, kind, summary:[1..20 lines, <=300 chars, no blanks], payload}` and `Authorization: Bearer <token>`.
-  * `GET ...?kind=knowledge` -> answers `[{changeId, kind, payload, approved, answeredAt, createdAt}]`. Accepted shapes: `{answers}`, `{data:{answers}}`, `{ok:true,data:{ttlDays,answers}}`.
+  * `POST {baseUrl}/api/agent-decisions/sync` with `{changeId, kind, summary:[1..20 lines, <=300 chars, no blanks], payload, reclassify?}` and `Authorization: Bearer <token>`. `reclassify` = `{options:[{value,label}], current}`, sent only for classification proposals (c/b/d) so the app can render a "change class" picker (d only for vault notes).
+  * `GET ...?kind=knowledge` -> answers `[{changeId, kind, payload, approved, reclassifyTo?, answeredAt, createdAt}]`. A `reclassifyTo` (a/b/c/d) is handled like `attic reclassify` and then approved (a closes it), judged at `answeredAt` against the 7-day TTL; an unusable value leaves the proposal as is and is only acked. Accepted shapes: `{answers}`, `{data:{answers}}`, `{ok:true,data:{ttlDays,answers}}`.
   * `PATCH ...` with `{changeIds, kind}` acks. Only ids that exist in the local store **and were published through this adapter** are accepted and acked; every other id is ignored and left alone for whoever owns it.
 * `github-issues {repo, allowedUsers?}` — needs `gh`. Creates an issue labelled `attic-proposal`; a **comment** of `approve` / `reject` decides it, and only if its author is an approver. Approvers are `allowedUsers` when set; otherwise the single login `gh api user` returned when the issue was created (stored in the local proposal record). An empty approver list approves nobody. Labels are **not** consulted: GitHub does not say who added a label. Afterwards `attic-applied` is added and the issue is closed.
 

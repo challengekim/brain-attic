@@ -170,8 +170,8 @@ Claude Code·Codex 에서는 같은 루프를 `attic-teach` 스킬로 대화하�
 양방향:
 
 * `decision-api {baseUrl, tokenEnv, kind:"knowledge"}`
-  * `POST {baseUrl}/api/agent-decisions/sync` — 본문 `{changeId, kind, summary:[1~20줄, 줄당 300자 이하, 빈 줄 금지], payload}`, 헤더 `Authorization: Bearer <토큰>`.
-  * `GET ...?kind=knowledge` — 답 `[{changeId, kind, payload, approved, answeredAt, createdAt}]`. `{answers}`, `{data:{answers}}`, `{ok:true,data:{ttlDays,answers}}` 형태를 모두 받습니다.
+  * `POST {baseUrl}/api/agent-decisions/sync` — 본문 `{changeId, kind, summary:[1~20줄, 줄당 300자 이하, 빈 줄 금지], payload, reclassify?}`, 헤더 `Authorization: Bearer <토큰>`. `reclassify` 는 분류 제안(c/b/d)에만 붙는 `{options:[{value,label}], current}` 로, 앱이 «분류 바꾸기» 버튼을 그리게 합니다(d 는 볼트 노트일 때만).
+  * `GET ...?kind=knowledge` — 답 `[{changeId, kind, payload, approved, reclassifyTo?, answeredAt, createdAt}]`. `reclassifyTo`(a/b/c/d)가 오면 `attic reclassify` 와 같이 처리하고 승인합니다(a 는 닫기). 분류는 답한 시각(`answeredAt`) 기준으로 7일 안이면 적용하고, 적용할 수 없는 값이면 제안을 그대로 두고 ack 만 합니다. `{answers}`, `{data:{answers}}`, `{ok:true,data:{ttlDays,answers}}` 형태를 모두 받습니다.
   * `PATCH ...` — `{changeIds, kind}` 로 ack. **로컬 저장소에 있고 이 어댑터로 발송했다고 기록된 id 만** 받아들여 ack 하고, 나머지 id 는 주인이 가져가도록 건드리지 않습니다.
 * `github-issues {repo, allowedUsers?}` — `gh` 필요. `attic-proposal` 라벨로 이슈를 만들고, **코멘트**의 `approve` / `reject` 로 결정합니다. 작성자가 승인자일 때만 인정합니다. 승인자는 `allowedUsers` 가 있으면 그 목록이고, 없으면 이슈를 만들 때 `gh api user` 가 돌려준 로그인 한 명입니다(로컬 제안 기록에 저장). 승인자 목록이 비면 아무도 승인할 수 없습니다. **라벨은 보지 않습니다** — 누가 붙였는지 GitHub 이 알려 주지 않기 때문입니다. 처리 뒤 `attic-applied` 라벨을 붙이고 이슈를 닫습니다.
 
