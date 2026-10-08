@@ -21,7 +21,9 @@ const HELP = {
   reclassify <id> <a|b|c|d>           분류 제안의 분류를 내가 정한다 (7일 무응답 자동 적용보다 우선)
   withdraw <id...> [--reason <글>]    대기 중인 제안을 철회한다 (중복·낡은 제안. 적용·자동 적용되지 않는다)
   sync                                양방향 어댑터에서 답을 가져오고 자기 것만 ack
-  apply                               승인된 제안 적용 (화이트리스트 연산만 직접)
+  apply                               승인된 제안 적용 (화이트리스트 연산만 직접, 해 볼 것은 할일로)
+  tick                                sync + apply 한 번 (예약: 매시 20분 — 앱에서 누른 승인을 1시간 안에 반영)
+  todo [status] | todo resolve <id> --delivered|--retry   결과를 알 수 없는 할일 배달 확인
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
   schedule install|uninstall|status [--dry-run]
   teach <주제|파일|URL> [--quiz-first] [--next|--queue|--due|--review <slug>|--save-session <json>]   설명 → 퀴즈 → 내가 설명하기
@@ -38,9 +40,11 @@ const HELP = {
   reclassify: '사용법: attic reclassify <id> <a|b|c|d>\n  대기 중인 분류 제안(c 설명하기 / b 자동 적용 / d 보관)의 분류를 바꿉니다. a 는 «인지만» 이라 제안을 닫습니다. 분류 제안은 7일 동안 답이 없으면 추천 분류 그대로 자동 적용됩니다.',
   approve: '사용법: attic approve <id>', reject: '사용법: attic reject <id>', pending: '사용법: attic pending [--json]',
   sync: '사용법: attic sync\n  decision-api / github-issues 에서 답을 가져옵니다. 로컬에 있는 제안 id 만 ack 합니다.',
-  apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
+  apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, try_in_project(해 볼 것)는 지시문을 쓰고 config.todo 가 있으면 할일을 하나 만듭니다, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
+  tick: '사용법: attic tick\n  양방향 어댑터에서 답을 가져오고(sync) 승인된 제안을 적용(apply)합니다. 만료는 하지 않습니다(월요일 review 몫). 예약이 매시 20분에 돌립니다.',
+  todo: '사용법: attic todo [status] | attic todo resolve <id> --delivered|--retry\n  할일 명령이 시간 초과·알 수 없는 종료로 끝났거나 도중에 멈춘 «해 볼 것» 을 보여줍니다. 앱에서 attic:<id> 를 찾아보고,\n  있으면 --delivered(닫기), 없으면 --retry(다음 apply 가 다시 만든다).',
   retro: '사용법: attic retro [--month YYYY-MM] [--dry-run]\n  기본은 지난달.',
-  schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. collect 매일 08:00, radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00.',
+  schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. collect 매일 08:00, radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00, tick 매시 20분.',
   teach: '사용법: attic teach --help',
 };
 
@@ -55,7 +59,7 @@ async function main(argv) {
   if (!(cmd in HELP)) { console.error(`알 수 없는 명령: ${cmd}\n`); console.error(HELP._); return 2; }
   // teach has its own detailed help in src/teach.mjs
   if (cmd !== 'teach' && (rest.includes('--help') || rest.includes('-h'))) { console.log(HELP[cmd]); return 0; }
-  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title', 'reason'], bool: ['json', 'yes', 'dry-run', 'fresh'] });
+  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title', 'reason'], bool: ['json', 'yes', 'dry-run', 'fresh', 'delivered', 'retry'] });
   const ctx = makeCtx({ vaultOverride: args.vault && cmd !== 'init' ? args.vault : undefined });
 
   switch (cmd) {
@@ -160,7 +164,8 @@ async function main(argv) {
       const { expireStale } = await import('../src/proposals.mjs');
       requireVault(ctx);
       const res = await syncAll(ctx);
-      expireStale(ctx.vault);
+      // A failed pull may hide an on-time answer: expire only after every adapter answered.
+      if (res.every((r) => r.ok !== false)) expireStale(ctx.vault);
       if (!res.length) console.log('양방향 어댑터(decision-api, github-issues)가 설정돼 있지 않습니다');
       for (const r of res) console.log(`${r.type}: ${r.ok ? `변경 ${r.changed?.length ?? 0}건${r.acked ? `, ack ${r.acked.length}건, 무시 ${r.ignored.length}건` : ''}` : `실패 (${r.error})`}`);
       return 0;
@@ -172,6 +177,33 @@ async function main(argv) {
       for (const p of r.prompts) console.log(`  - ${p.file}`);
       for (const e of r.errors) console.log(`  ! ${e.id}: ${e.error}`);
       return r.errors.length ? 1 : 0;
+    }
+    case 'tick': {
+      const { syncAll } = await import('../src/notify/index.mjs');
+      const { apply } = await import('../src/apply.mjs');
+      requireVault(ctx);
+      const res = await syncAll(ctx);
+      const r = await apply(ctx);
+      console.log(JSON.stringify({ at: new Date().toISOString(), sync: res.map((x) => ({ type: x.type, ok: x.ok !== false, changed: x.changed?.length ?? 0, ...(x.error ? { error: x.error } : {}) })),
+        applied: r.applied.map((x) => x.id), prompts: r.prompts.map((x) => x.id), skipped: r.skipped.length, errors: r.errors }));
+      return 0;
+    }
+    case 'todo': {
+      const { todoStatus, resolveTodo } = await import('../src/todo.mjs');
+      const vault = requireVault(ctx);
+      const [sub = 'status', id] = args._;
+      if (sub === 'status') {
+        const list = todoStatus(vault);
+        if (args.json) printJson(list);
+        else if (!list.length) console.log('확인이 필요한 할일 배달이 없습니다');
+        else for (const t of list) console.log(`${t.id}  ${t.state}  ${t.project}: ${t.title}${t.error ? `\n    ${t.error}` : ''}`);
+        return 0;
+      }
+      if (sub === 'resolve' && id && (args.delivered || args.retry)) {
+        try { const p = resolveTodo(vault, id, args.delivered ? 'delivered' : 'retry'); console.log(`${p.id}: ${args.delivered ? '배달됨으로 닫았습니다' : '다음 apply 가 다시 만듭니다'}`); return 0; }
+        catch (e) { console.error(e.message); return 1; }
+      }
+      console.error(HELP.todo); return 2;
     }
     case 'retro': {
       const { retro } = await import('../src/retro.mjs');

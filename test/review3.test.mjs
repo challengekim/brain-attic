@@ -11,6 +11,7 @@ import { collect } from '../src/collect.mjs';
 import { createProposal, decide, getProposal, listProposals } from '../src/proposals.mjs';
 import * as gi from '../src/notify/github-issues.mjs';
 import { buildDescriptors, renderSheet, review, triageIsStale, MAX_AUTO } from '../src/review.mjs';
+import { TRIAGE_SCHEMA, triageInputKey } from '../src/triage.mjs';
 import { apply } from '../src/apply.mjs';
 import { atticPath, ensureSkeleton, parseFrontmatter } from '../src/vault.mjs';
 import { schedule, renderPlist, renderCronBlock, configEnvFor, JOBS } from '../src/schedule.mjs';
@@ -276,12 +277,14 @@ test('[7] review re-classifies when the saved triage had runner errors, then kee
 test('[7] triageIsStale: empty items, or inbox / included notes changed after generatedAt', () => {
   const ctx = reviewCtx('ok');
   const t0 = new Date('2026-10-07T12:00:00');
-  const fresh = { items: [{ id: 'i1' }], errors: [], generatedAt: new Date(t0.getTime() + 60000).toISOString() };
+  const fresh = { schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), items: [{ id: 'i1' }], errors: [], generatedAt: new Date(t0.getTime() + 60000).toISOString() };
   const past = new Date(t0.getTime()); // files older than generatedAt
   fs.utimesSync(atticPath(ctx.vault, 'inbox', '2026-10-06.md'), past, past);
   assert.equal(triageIsStale(ctx, ctx.vault, fresh), false);
   assert.equal(triageIsStale(ctx, ctx.vault, { ...fresh, items: [] }), true);
   assert.equal(triageIsStale(ctx, ctx.vault, { ...fresh, errors: ['x'] }), true);
+  assert.equal(triageIsStale(ctx, ctx.vault, { ...fresh, schema: undefined }), true, 'result from an older version');
+  assert.equal(triageIsStale(ctx, ctx.vault, { ...fresh, inputKey: 'other' }), true, 'exclusions or project list changed');
   const later = new Date(t0.getTime() + 3600000);
   fs.utimesSync(atticPath(ctx.vault, 'inbox', '2026-10-06.md'), later, later);
   assert.equal(triageIsStale(ctx, ctx.vault, fresh), true, 'inbox changed after');

@@ -74,11 +74,23 @@ export async function pull(ctx, cfg) {
     if (!current || (Number.isFinite(answeredAt) && answeredAt < Date.parse(sent.sentAt))) {
       ignored.push(a.changeId); ackIds.push(a.changeId); continue;
     }
+    // The decision was made at answeredAt, so the deadline is judged at that moment, not at pull time: an answer given in
+    // time still counts when the pull comes late (hourly tick, a failed sync, a sleeping laptop).
+    const at = Number.isFinite(answeredAt) && answeredAt <= Date.now() ? new Date(answeredAt) : new Date();
+    // Expired locally (a run that could not pull, or `attic pending`) although the answer was given before the deadline:
+    // the answer wins. Only an answer with a valid timestamp inside [sentAt, expiresAt] can revive it.
+    const deadlineMs = Date.parse(p.expiresAt);
+    if (p.status === 'expired' && typeof a.approved === 'boolean' && typeof a.reclassifyTo !== 'string' && Number.isFinite(answeredAt)
+      && Number.isFinite(deadlineMs) && answeredAt <= deadlineMs && answeredAt <= Date.now()) {
+      p.status = a.approved ? 'approved' : 'rejected'; p.decidedAt = new Date(answeredAt).toISOString(); p.decidedBy = 'decision-api';
+      p.lateAnswerAt = new Date().toISOString(); delete p.expiredAt;
+      saveProposal(ctx.vault, p);
+      changed.push(p.id); ackIds.push(a.changeId);
+      continue;
+    }
     if (p.status === 'pending' && a.approved === true && typeof a.reclassifyTo === 'string') {
       // The user picked a class on the card: their instruction beats the recommendation (same as `attic reclassify`).
-      // The decision was made at answeredAt (inside the card's TTL), so judge the deadline at that moment, not at pull time.
       const cls = a.reclassifyTo.toLowerCase();
-      const at = Number.isFinite(answeredAt) && answeredAt <= Date.now() ? new Date(answeredAt) : new Date();
       try {
         const q = reclassify(ctx.vault, p.id, cls, { by: 'decision-api', now: at });
         if (q.status === 'pending') decide(ctx.vault, p.id, 'approved', { by: 'decision-api', now: at });
@@ -97,7 +109,7 @@ export async function pull(ctx, cfg) {
       continue;
     }
     if (p.status === 'pending' && typeof a.approved === 'boolean') {
-      const r = decide(ctx.vault, p.id, a.approved ? 'approved' : 'rejected', { by: 'decision-api' });
+      const r = decide(ctx.vault, p.id, a.approved ? 'approved' : 'rejected', { by: 'decision-api', now: at });
       if (r.changed && r.reason !== 'expired') changed.push(p.id);
     }
     ackIds.push(a.changeId);

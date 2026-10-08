@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { testCtx, fakeLlmEnv, tmp, ROOT } from './helpers.mjs';
 import { save, parseSaveArgs } from '../src/save.mjs';
-import { gatherItems, triage } from '../src/triage.mjs';
+import { gatherItems, triage, TRIAGE_SCHEMA, triageInputKey } from '../src/triage.mjs';
 import { review, triageIsStale, systemReviewDescriptor, buildDescriptors, kindOfItem } from '../src/review.mjs';
 import { listProposals } from '../src/proposals.mjs';
 import { atticPath, ensureSkeleton, parseFrontmatter } from '../src/vault.mjs';
@@ -56,7 +56,7 @@ test('triage reads manual saves first, and a saved link wins over the same link 
 test('a new manual save makes this week\'s saved triage stale (review re-classifies)', async () => {
   const ctx = testCtx();
   ensureSkeleton(ctx.vault);
-  const saved = { generatedAt: new Date(Date.now() - 60000).toISOString(), errors: [], items: [{ id: 'i1' }] };
+  const saved = { schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), generatedAt: new Date(Date.now() - 60000).toISOString(), errors: [], items: [{ id: 'i1' }] };
   assert.equal(triageIsStale(ctx, ctx.vault, saved), false);
   save(ctx, { memo: '새 메모' });
   assert.equal(triageIsStale(ctx, ctx.vault, saved), true);

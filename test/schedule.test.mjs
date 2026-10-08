@@ -23,10 +23,15 @@ test('plist: label, absolute node + script + command, calendar, logs', () => {
   assert.match(retro, /<key>Day<\/key><integer>1<\/integer>\s*<key>Hour<\/key><integer>9<\/integer>\s*<key>Minute<\/key><integer>0<\/integer>/);
 });
 
-test('schedule install --dry-run on darwin prints one plist per job (collect, radar, review, retro) and writes nothing', async () => {
+test('schedule install --dry-run on darwin prints one plist per job (collect, radar, review, retro, tick) and writes nothing', async () => {
   const ctx = testCtx();
   const r = await schedule(ctx, 'install', { dryRun: true, platform: 'darwin' });
-  assert.deepEqual(r.jobs.map((j) => path.basename(j.file)), ['com.brain-attic.collect.plist', 'com.brain-attic.radar.plist', 'com.brain-attic.review.plist', 'com.brain-attic.retro.plist']);
+  assert.deepEqual(r.jobs.map((j) => path.basename(j.file)), ['com.brain-attic.collect.plist', 'com.brain-attic.radar.plist', 'com.brain-attic.review.plist', 'com.brain-attic.retro.plist', 'com.brain-attic.tick.plist']);
+  // tick runs every hour: only a Minute key, so launchd fires it each hour at :20
+  const tick = r.jobs.find((j) => j.job === 'tick').plist;
+  assert.match(tick, /<key>Minute<\/key><integer>20<\/integer>/);
+  assert.doesNotMatch(tick, /<key>Hour<\/key>/);
+  assert.match(tick, /<string>tick<\/string>/);
   assert.ok(r.jobs.every((j) => j.plist.startsWith('<?xml')));
   assert.ok(!fs.existsSync(path.join(ctx.home, 'Library')), 'dry-run must not touch the home');
 });
@@ -37,6 +42,7 @@ test('crontab block is marked and merging is idempotent and preserves other line
   assert.match(block, /10 9 \* \* \* '\/opt\/node\/bin\/node' '\/opt\/attic\/bin\/attic\.mjs' radar/);
   assert.match(block, /30 8 \* \* 1 .* review/);
   assert.match(block, /0 9 1 \* \* .* retro/);
+  assert.match(block, /20 \* \* \* \* .* tick/);
   const existing = '0 1 * * * backup.sh\n';
   const once = mergeCrontab(existing, block);
   const twice = mergeCrontab(once, block);

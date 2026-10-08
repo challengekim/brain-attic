@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { run, which } from './util.mjs';
+import { resolveCommand } from './todo.mjs';
 
 const TOOLS = [
   { id: 'git', bins: ['git'], version: true, purpose: '볼트 버전관리, install.sh 의 clone/pull', off: '볼트 git 연동과 install.sh 업데이트' },
@@ -69,6 +70,11 @@ export async function doctor(ctx) {
   const gptBrowser = macApp(env, ['ChatGPT Atlas', 'ChatGPT']);
   items.push({ id: 'chatgpt-browser', label: 'ChatGPT (Atlas/앱)', found: !!gptBrowser, path: gptBrowser, purpose: 'GPT 쪽 브라우저 에이전트로 로그인 필요한 페이지 읽기(사람이 직접 실행)', off: '(선택) GPT 브라우저 에이전트' });
   items.push({ id: 'chrome', label: 'Chrome', found: !!chrome, path: chrome, purpose: 'claude-in-chrome 등 브라우저 확장 기반 수집', off: '(선택) 브라우저 확장 기반 수집' });
+  const t = ctx.config.todo;
+  const todoCmd = Array.isArray(t?.argv) && typeof t.argv[0] === 'string' && t.argv[0] ? t.argv[0] : null;
+  const todoPath = todoCmd ? resolveCommand(todoCmd, env) : null;
+  items.push({ id: 'todo', label: 'todo hook', found: !!todoPath, path: todoPath || todoCmd, purpose: '승인한 «해 볼 것» 을 할일 앱에 하나씩 만든다 (config.todo.argv)',
+    off: todoCmd ? `명령을 찾지 못함: ${todoCmd} — 할일 없이 지시문(_attic/approved/<id>.prompt.md)만 만든다` : '(선택) 승인한 «해 볼 것» 은 지시문만 만든다' });
   const llm = ctx.config.llm?.runner || 'claude';
   const runnerOk = llm === 'none' ? false : !!items.find((i) => i.id === llm)?.found;
   return { ok: major >= 20, runner: { configured: llm, available: runnerOk }, items };

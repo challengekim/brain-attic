@@ -6,7 +6,7 @@
     { "type": "github", "name": "Codex releases", "repo": "openai/codex" }
   ],
   "llm": { "runner": "claude", "model": null, "timeoutMs": 180000 },
-  "triage": { "include": ["References", "Daily"], "targetRatios": { "a": 0.30, "b": 0.45, "c": 0.05, "d": 0.20 }, "projectPaths": ["~/code/my-app"] },
+  "triage": { "include": ["References", "Daily"], "exclude": ["References/Worklog"], "targetRatios": { "a": 0.30, "b": 0.45, "c": 0.05, "d": 0.20 }, "projectPaths": ["~/code/my-app"] },
   "audit": { "paths": ["~/.claude/skills", "~/.claude/scripts"] },
   "radar": { "priceThreshold": 0.2 },
   "notifiers": [
@@ -14,5 +14,6 @@
     { "type": "discord", "webhookEnv": "ATTIC_DISCORD_WEBHOOK" },
     { "type": "decision-api", "baseUrl": "https://your-app.example.com", "tokenEnv": "ATTIC_DECISION_TOKEN", "kind": "knowledge" },
     { "type": "github-issues", "repo": "your-name/attic-inbox", "allowedUsers": ["your-name"] }
-  ]
+  ],
+  "todo": { "argv": ["my-todo-cli", "add", "{title}", "--due", "{due}", "--note", "{body}"], "dueDays": 3, "timeoutMs": 30000 }
 }

@@ -9,6 +9,8 @@ export const JOBS = [
   { name: 'radar', cmd: 'radar', when: { Hour: 9, Minute: 10 }, cron: '10 9 * * *', label: '매일 09:10' },
   { name: 'review', cmd: 'review', when: { Weekday: 1, Hour: 8, Minute: 30 }, cron: '30 8 * * 1', label: '월요일 08:30' },
   { name: 'retro', cmd: 'retro', when: { Day: 1, Hour: 9, Minute: 0 }, cron: '0 9 1 * *', label: '매월 1일 09:00' },
+  // Answers given in the app (decision-api / GitHub Issues) are pulled and approved proposals applied within the hour.
+  { name: 'tick', cmd: 'tick', when: { Minute: 20 }, cron: '20 * * * *', label: '매시 20분' },
 ];
 export const MARK_BEGIN = '# >>> brain-attic >>>';
 export const MARK_END = '# <<< brain-attic <<<';

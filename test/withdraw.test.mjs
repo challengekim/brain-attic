@@ -6,6 +6,7 @@ import { atticPath, ensureSkeleton } from '../src/vault.mjs';
 import { isoWeek } from '../src/util.mjs';
 import { createProposal, decide, expireStale, getProposal, withdraw } from '../src/proposals.mjs';
 import { review } from '../src/review.mjs';
+import { TRIAGE_SCHEMA, triageInputKey } from '../src/triage.mjs';
 import { compute } from '../src/retro.mjs';
 import * as api from '../src/notify/decision-api.mjs';
 import { startServer } from './helpers.mjs';
@@ -73,7 +74,7 @@ test('review re-run in the same week withdraws stale classification cards and ol
   // Final classification of the week (saved, newer than every input so review reuses it instead of calling a model)
   const item = (title, cls, reason = 'r') => ({ id: title, title, url: `https://e.test/${encodeURIComponent(title)}`, source: 'Feed', class: cls, project: null, reason, minutes: cls === 'c' ? 30 : undefined });
   const tri = { week, generatedAt: new Date(Date.now() + 3600000).toISOString(), weeklyMinutes: null, usedMinutes: 60, demoted: 0, errors: [], counts: { a: 1, b: 0, c: 2, d: 0, unclassified: 0 }, items: [item('A', 'c', 'new reason'), item('B', 'a'), item('D', 'c')] };
-  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify(tri));
+  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify({ schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), ...tri }));
   const r = await review(ctx, { now: NOW });
   assert.equal(getProposal(ctx.vault, b.id).status, 'withdrawn', 'B is a now');
   assert.match(getProposal(ctx.vault, b.id).withdrawReason, /a/);
@@ -93,7 +94,7 @@ test('review --dry-run withdraws nothing', async () => {
   const week = isoWeek(NOW);
   const b = createProposal(ctx.vault, teach('B'), NOW).proposal;
   const tri = { week, generatedAt: new Date(Date.now() + 3600000).toISOString(), errors: [], counts: { a: 1, b: 0, c: 0, d: 0, unclassified: 0 }, items: [{ id: 'B', title: 'B', url: 'https://e.test/B', source: 'Feed', class: 'a', project: null, reason: 'r' }] };
-  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify(tri));
+  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify({ schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), ...tri }));
   await review(ctx, { now: NOW, dryRun: true });
   assert.equal(getProposal(ctx.vault, b.id).status, 'pending');
 });
@@ -109,7 +110,7 @@ test('review re-run: an item that is 미분류 (runner failure) or missing does 
     { id: 'U', title: 'U', url: 'https://e.test/U', source: 'Feed', class: 'unclassified', project: null, reason: '주간 상한 초과 — 분류하지 않음' },
     { id: 'Z', title: 'Z', url: 'https://e.test/Z', source: 'Feed', class: 'a', project: null, reason: 'r' },
   ] };
-  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify(tri));
+  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify({ schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), ...tri }));
   const r = await review(ctx, { now: NOW });
   assert.equal(getProposal(ctx.vault, u.id).status, 'pending');
   assert.equal(getProposal(ctx.vault, m.id).status, 'pending');
@@ -129,7 +130,7 @@ test('review re-run never overrides the user: a reclassified card stays, an answ
   decide(ctx.vault, j.id, 'rejected', { now: first });
   // the saved triage (re-run, new wording) still says c for both
   const tri = { week, generatedAt: new Date(Date.now() + 3600000).toISOString(), errors: [], counts: { a: 0, b: 0, c: 2, d: 0, unclassified: 0 }, items: ['R', 'J'].map((t) => ({ id: t, title: t, url: `https://e.test/${t}`, source: 'Feed', class: 'c', project: null, reason: 'new', minutes: 30 })) };
-  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify(tri));
+  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify({ schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), ...tri }));
   const r = await review(ctx, { now: NOW });
   const rp = getProposal(ctx.vault, r0.id);
   assert.equal(rp.status, 'pending');

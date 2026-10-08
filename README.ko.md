@@ -86,9 +86,11 @@ attic teach --next             # 승인한 c 를 하나 골라 내가 설명해 
 | `attic approve <id>` / `reject <id>` / `pending` | 터미널에서 결정합니다. |
 | `attic withdraw <id...> [--reason <글>]` | 대기 중인 제안을 **철회**합니다(`withdrawn`). 적용되지 않고, 7일이 지나도 자동 적용되지 않으며, 회고 승인율에도 들어가지 않습니다. 같은 주에 `attic review` 를 다시 돌리면, 새 분류와 안 맞는 앞 실행의 분류 제안과 문구만 바뀐 중복은 review 가 알아서 철회합니다. |
 | `attic sync` | 양방향 어댑터(decision-api, github-issues)에서 답을 가져옵니다. **로컬에 있는 id 만** ack 합니다. |
-| `attic apply` | 승인된 제안만 처리합니다. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` 는 config/파일을 직접 고치고, 그 밖은 사람이 `claude -p` 로 돌릴 수 있는 지시문 `_attic/approved/<id>.prompt.md` 만 만듭니다. |
+| `attic apply` | 승인된 제안만 처리합니다. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` 는 config/파일을 직접 고치고, `try_in_project`(해 볼 것)는 지시문을 쓰고 `config.todo` 가 있으면 할일을 **하나** 만듭니다(«프로젝트에서 해 보기» 참고). 그 밖은 사람이 `claude -p` 로 돌릴 수 있는 지시문 `_attic/approved/<id>.prompt.md` 만 만듭니다. |
+| `attic tick` | `sync` 다음 `apply` 를 한 번 돌립니다(만료는 안 함). 매시 20분에 예약돼 있어, 앱에서 누른 답이 1시간 안에 반영됩니다. |
+| `attic todo [status]` / `attic todo resolve <id> --delivered\|--retry` | 결과를 알 수 없는 할일 배달(시간 초과, 예상 밖 종료, 도중 중단)을 보여 줍니다. 할일 앱에서 `attic:<id>` 를 찾아보고 있으면 `--delivered`(닫기), 없으면 `--retry`(다음 apply 가 다시 만든다). |
 | `attic retro [--month YYYY-MM] [--dry-run]` | 월간 자기평가입니다. 출처별 항목 수, a/b/c/d 비율, 승인율, teach 노트 수와 평균 점수를 계산하고, 90일간 a/c 가 0 인 출처는 `remove_source`, 승인율 30% 미만 범주는 기준 조정을 **제안**합니다(같은 승인 절차). |
-| `attic schedule install\|uninstall\|status [--dry-run]` | collect 매일 08:00, radar 매일 09:10, review 월요일 08:30, retro 매월 1일 09:00. macOS 는 LaunchAgents(`com.brain-attic.<job>.plist`), Linux 는 마커 주석으로 감싼 crontab 블록(멱등)을 씁니다. |
+| `attic schedule install\|uninstall\|status [--dry-run]` | collect 매일 08:00, radar 매일 09:10, review 월요일 08:30, retro 매월 1일 09:00, tick 매시 20분. macOS 는 LaunchAgents(`com.brain-attic.<job>.plist`), Linux 는 마커 주석으로 감싼 crontab 블록(멱등)을 씁니다. |
 | `attic teach ...` | 설명 -> 퀴즈 -> "직접 설명해 보세요" teach-back 세션입니다(`src/teach.mjs`). |
 
 ### `audit` 이 하지 않는 일
@@ -116,6 +118,19 @@ attic teach --next             # 승인한 c 를 하나 골라 내가 설명해 
 ```
 
 같은 내용은 같은 id 가 되므로 다시 보내도 멱등이고, 내용이 다르면 id 도 다릅니다. id 에는 설치마다 다른 무작위 값이 섞여 있어 다른 볼트의 제안과 겹치지 않고, 7일이 지난 시스템 변경 제안은 승인되지 않습니다(분류 제안은 추천대로 자동 적용). 만료 뒤 같은 내용이 다시 올라오면 새 세대(`-g2`)로 보내 옛 승인이 재사용되지 않게 합니다.
+
+## 프로젝트에서 해 보기 (c → «해 볼 것» → 할일)
+
+c 는 둘로 나뉩니다. **learn** 은 깊게 읽고 설명해 볼 개념(설명하기 큐)이고, **try** 는 내 프로젝트 하나에서 작게 시험해 볼
+도구·방법입니다. try 이려면 모델이 프로젝트(`_attic/projects.md` 의 이름), **다음 행동**(무엇을 어디서 얼마나 작게), **판정**
+(무엇을 재면 됐다/안 됐다를 아는지) 셋을 모두 적어야 합니다. 하나라도 빠지면 learn 으로 남고, 빈 칸을 지어내 채우지 않습니다.
+도구 여러 개를 소개하는 글이면 가장 먼저 해 볼 하나가 다음 행동이 되고, 경쟁 후보와 들일 이유가 약한 것은 이유에 남습니다.
+
+시트 맨 위에 «이번 주 해 볼 것»(try, 순위대로)과 «들이지 않기로 한 것»(저장할 때 판단을 적은 노트 중 a/d 가 된 것과 그 이유)이
+옵니다. try 는 `try_in_project` 카드가 됩니다(주당 최대 5건). **자동 적용하지 않습니다** — 답이 없으면 만료됩니다. 승인하면
+(터미널·앱·이슈) `_attic/approved/<id>.prompt.md` 지시문(작게 시도, 전/후 측정, 결과를 볼트에 기록, 안 되면 되돌리기)을 쓰고,
+`config.todo` 가 있으면 할일 앱에 할일을 하나 만듭니다. 제안별 잠금과 위의 종료 코드 계약으로 승인 하나가 할일을 둘 이상
+만들지 않습니다.
 
 ## 설명하기 (teach)
 
@@ -150,7 +165,9 @@ Claude Code·Codex 에서는 같은 루프를 `attic-teach` 스킬로 대화하�
 | `projectsFile` | 기본은 `<vault>/_attic/projects.md`. |
 | `sources[]` | `{type:"rss", name, url}` 또는 `{type:"github", name, repo:"owner/name"}` (`releases.atom` 으로 변환). |
 | `llm` | `{runner:"claude"\|"codex"\|"none", model, timeoutMs, allowCodexWithUntrusted}`. 기본 모델: claude `haiku`, codex `gpt-6-luna`. 외부 텍스트가 들어가는 호출에서 `codex` 는 `allowCodexWithUntrusted: true` 가 아니면 거부됩니다(보안 경계 참고). |
-| `triage.include[]` | 글롭이 아니라 **폴더 목록**(볼트 기준 상대 경로). 최근 7일 수정된 `.md` 의 frontmatter(`title`, `url`, `summary`, `tags`)를 읽습니다. 기본은 비어 있고, `attic save` 가 쓰는 `_attic/saved/` 는 여기 적지 않아도 항상 읽습니다. |
+| `triage.include[]` | 글롭이 아니라 **폴더 목록**(볼트 기준 상대 경로). 최근 7일 수정된 `.md` 의 frontmatter(`title`, `url` 또는 `source:` 의 URL, `summary` 또는 `description`, `tags`)를 읽습니다. 저장할 때 직접 적은 판단(`my_relevance`, `applicable_when`)은 `relevance` 로 모델에 가고 가장 무겁게 봅니다. 기본은 비어 있고, `attic save` 가 쓰는 `_attic/saved/` 는 여기 적지 않아도 항상 읽습니다. |
+| `triage.exclude[]` | 읽지 않을 폴더(볼트 기준 접두어). 자동 생성 워크로그·다이제스트 등. 이것이나 `_attic/projects.md` 를 바꾸면 이번 주 저장된 분류를 재사용하지 않고 다시 분류합니다. |
+| `todo` | 선택. 승인한 «해 볼 것» 을 할일로 만드는 명령: `{argv:[명령, ...인자], dueDays:3, timeoutMs:30000}`. 셸 없이 실행하고, `{title} {body} {due} {tags} {project} {id} {url}` 은 인자 하나 안에서만 바꿉니다. 바꾼 값이 `-` 로 시작하면 앞에 `·` 를 붙입니다. 종료 코드 0 = 만들었다, 75 = 확실히 안 만들었다(다시 시도), 그 밖 = 알 수 없다(스스로 다시 시도하지 않음, `attic todo` 참고). |
 | `triage.weeklyMinutes` | 선택. c 항목의 주간 시간 예산. 기본은 없음(무제한). 적어 두면 넘는 c 는 a 로 강등합니다. |
 | `triage.targetRatios` | a/b/c/d 기대 비율(기본 0.30/0.45/0.05/0.20, 합 1). 모델에게 알려 주고 보고서에 «실제 vs 기대» 로 보이기만 합니다. 강제하지 않습니다. |
 | `triage.projectPaths` | 사용 신호를 셀 프로젝트 저장소 경로(배열 또는 `{이름: 경로}`). `_attic/projects.md` 줄에 적은 경로도 씁니다. 프로젝트 20개, 프로젝트당 텍스트 파일 200개·2MB 까지, 심볼릭 링크 제외. |
