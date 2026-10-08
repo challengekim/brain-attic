@@ -22,6 +22,14 @@ async function versionOf(bin, env) {
   return (r.stdout || r.stderr).trim().split('\n')[0].slice(0, 80) || null;
 }
 
+/** The vault may be a sub-folder of a git repo (notes tree inside the repo root): walk up to find .git. */
+function inGitRepo(dir) {
+  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, '.git'))) return true;
+    if (path.dirname(d) === d) return false;
+  }
+}
+
 function macApp(env, names) {
   if (process.platform !== 'darwin') return null;
   for (const n of names) for (const dir of ['/Applications', path.join(env.HOME || '', 'Applications')]) {
@@ -55,7 +63,7 @@ export async function doctor(ctx) {
   const vault = ctx.vault;
   const vaultExists = !!vault && fs.existsSync(vault);
   items.push({ id: 'vault', label: 'vault', found: vaultExists, path: vault, purpose: '노트 볼트 (_attic/ 에만 쓴다)', off: '대부분의 명령 — `attic init --vault <path>`' });
-  items.push({ id: 'vault-git', label: 'vault git', found: vaultExists && fs.existsSync(path.join(vault, '.git')), path: vault, purpose: '볼트 변경 이력(권장)', off: '(선택) 변경 이력 추적' });
+  items.push({ id: 'vault-git', label: 'vault git', found: vaultExists && inGitRepo(vault), path: vault, purpose: '볼트 변경 이력(권장)', off: '(선택) 변경 이력 추적' });
   items.push({ id: 'obsidian', label: 'obsidian', found: vaultExists && fs.existsSync(path.join(vault, '.obsidian')), path: vault ? path.join(vault, '.obsidian') : null, purpose: 'Obsidian 으로 시트/노트 열람 (.obsidian 폴더로 판단)', off: '(선택) Obsidian 에서 열람' });
   const chrome = chromePath(env);
   const gptBrowser = macApp(env, ['ChatGPT Atlas', 'ChatGPT']);
