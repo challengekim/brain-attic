@@ -21,7 +21,7 @@ const HELP = {
   apply                               승인된 제안 적용 (화이트리스트 연산만 직접)
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
   schedule install|uninstall|status [--dry-run]
-  teach ...                           (src/teach.mjs 가 있을 때)
+  teach <주제|파일|URL> [--next|--queue|--due|--review <slug>]   설명 → 퀴즈 → 내가 설명하기
 `,
   init: '사용법: attic init [--vault <path>] [--yes]\n  config($XDG_CONFIG_HOME/brain-attic/config.json)와 볼트 _attic/ 골격을 만들고, 스킬을 ~/.claude/skills, ~/.codex/skills 에 심링크합니다. 있는 것은 덮지 않습니다.',
   doctor: '사용법: attic doctor [--json]\n  git/gh/claude/codex/aws/railway/gws/aside/playwright/Chrome/볼트/obsidian 유무와 용도.',
@@ -35,7 +35,7 @@ const HELP = {
   apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
   retro: '사용법: attic retro [--month YYYY-MM] [--dry-run]\n  기본은 지난달.',
   schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00.',
-  teach: '사용법: attic teach ...\n  src/teach.mjs 의 teach(argv, ctx) 를 호출합니다.',
+  teach: '사용법: attic teach --help',
 };
 
 const printJson = (o) => console.log(JSON.stringify(o, null, 2));
@@ -47,7 +47,8 @@ async function main(argv) {
     console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version); return 0;
   }
   if (!(cmd in HELP)) { console.error(`알 수 없는 명령: ${cmd}\n`); console.error(HELP._); return 2; }
-  if (rest.includes('--help') || rest.includes('-h')) { console.log(HELP[cmd]); return 0; }
+  // teach has its own detailed help in src/teach.mjs
+  if (cmd !== 'teach' && (rest.includes('--help') || rest.includes('-h'))) { console.log(HELP[cmd]); return 0; }
   const args = parseArgs(rest, { string: ['vault', 'week', 'month'], bool: ['json', 'yes', 'dry-run', 'fresh'] });
   const ctx = makeCtx({ vaultOverride: args.vault && cmd !== 'init' ? args.vault : undefined });
 
