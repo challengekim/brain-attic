@@ -171,10 +171,18 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   // this classification disagrees: they would be auto-applied after 7 days. Withdraw them (not on --dry-run).
   const thisWeekPending = () => listProposals(vault, { status: 'pending' })
     .filter((p) => p.source === 'review' && isAutoApplicable(p) && p.createdAt && isoWeek(new Date(p.createdAt)) === week);
+  // Items the user already spoke for this week (answered, or picked a class with `attic reclassify` / the app): the
+  // user's word beats any re-run. Their proposals are never withdrawn here and no new card is made for them.
+  const isHuman = (p) => !!p.userClass || (['approved', 'applied', 'rejected'].includes(p.status) && p.decidedBy && p.decidedBy !== 'auto');
+  const humanKeys = new Set(listProposals(vault)
+    .filter((p) => isAutoApplicable(p) || p.recommended)
+    .filter((p) => p.createdAt && isoWeek(new Date(p.createdAt)) === week && isHuman(p))
+    .map((p) => itemKey(p.payload)));
   const withdrawn = [];
   if (!dryRun) {
     const classOf = new Map((tri.items || []).map((it) => [itemKey(it), it.class]));
     for (const p of thisWeekPending()) {
+      if (p.userClass) continue;
       const cls = classOf.get(itemKey(p.payload));
       // Only a definite, different class counts. Missing (over a cap) or 미분류 (runner failure) says nothing new,
       // and withdrawing on it would wipe the week's cards whenever the model call fails.
@@ -188,7 +196,8 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     if (p.status === 'withdrawn') continue;
     if (p.createdAt && isoWeek(new Date(p.createdAt)) === week && p.payload?.op) used[p.payload.op] = (used[p.payload.op] || 0) + 1;
   }
-  const descriptors = buildDescriptors(tri, aud, used, events);
+  const descriptors = buildDescriptors(tri, aud, used, events)
+    .filter((d) => !(OP_CLASS[d.payload?.op] && humanKeys.has(itemKey(d.payload))));
   // Classification suggestions nobody answered for 7 days are applied as recommended (not on --dry-run).
   const auto = canAuto ? await apply(ctx, { now, onlyAuto: true }) : { applied: [], prompts: [], errors: [] };
   // What apply() really did for auto-approved proposals (including ones `attic pending` / `attic sync` approved earlier); failures are listed apart.
@@ -204,6 +213,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     // Same note proposed again with new wording (a new id): keep this run's card, withdraw the older duplicate.
     const fresh = new Map(proposals.filter(isAutoApplicable).map((p) => [itemKey(p.payload), p.id]));
     for (const p of thisWeekPending()) {
+      if (p.userClass) continue;
       const newer = fresh.get(itemKey(p.payload));
       if (newer && newer !== p.id) withdrawn.push(withdraw(vault, p.id, { by: 'review', now, reason: `중복 — ${newer} 로 대체` }).id);
     }

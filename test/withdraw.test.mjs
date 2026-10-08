@@ -115,3 +115,26 @@ test('review re-run: an item that is 미분류 (runner failure) or missing does 
   assert.equal(getProposal(ctx.vault, m.id).status, 'pending');
   assert.deepEqual(r.withdrawn, []);
 });
+
+test('review re-run never overrides the user: a reclassified card stays, an answered item gets no new card', async () => {
+  const { reclassify } = await import('../src/proposals.mjs');
+  const ctx = testCtx({ config: { triage: { include: [] }, notifiers: [], audit: { paths: [] } } });
+  ensureSkeleton(ctx.vault);
+  const week = isoWeek(NOW);
+  const first = new Date(NOW.getTime() - 7 * 60000);
+  // user moved R from c to b; user rejected J
+  const r0 = createProposal(ctx.vault, teach('R', 'old'), first).proposal;
+  reclassify(ctx.vault, r0.id, 'b', { now: first });
+  const j = createProposal(ctx.vault, teach('J', 'old'), first).proposal;
+  decide(ctx.vault, j.id, 'rejected', { now: first });
+  // the saved triage (re-run, new wording) still says c for both
+  const tri = { week, generatedAt: new Date(Date.now() + 3600000).toISOString(), errors: [], counts: { a: 0, b: 0, c: 2, d: 0, unclassified: 0 }, items: ['R', 'J'].map((t) => ({ id: t, title: t, url: `https://e.test/${t}`, source: 'Feed', class: 'c', project: null, reason: 'new', minutes: 30 })) };
+  fs.writeFileSync(atticPath(ctx.vault, 'triage', `${week}.json`), JSON.stringify(tri));
+  const r = await review(ctx, { now: NOW });
+  const rp = getProposal(ctx.vault, r0.id);
+  assert.equal(rp.status, 'pending');
+  assert.equal(rp.payload.op, 'note_auto', 'the user picked b');
+  assert.deepEqual(r.withdrawn, []);
+  const titles = r.proposals.map((id) => getProposal(ctx.vault, id)).filter((p) => p.payload?.op === 'queue_teach').map((p) => p.payload.title);
+  assert.deepEqual(titles, [], 'no new c card for R or J');
+});
