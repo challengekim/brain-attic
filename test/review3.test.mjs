@@ -307,3 +307,12 @@ test('[8] plist and cron carry XDG_CONFIG_HOME and the config path (quoted)', as
   const lx = await schedule(ctx, 'install', { dryRun: true, platform: 'linux' });
   assert.equal((lx.crontab.match(/BRAIN_ATTIC_CONFIG=/g) || []).length, JOBS.length);
 });
+
+test('[r4] weekly caps count proposals already created this week', () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ id: `b${i}`, class: 'b', title: `b${i}`, url: `https://x.example/${i}`, reason: 'r' }));
+  const tri = { items };
+  const none = buildDescriptors(tri, emptyAud, { note_auto: 5 }).filter((d) => d.payload.op === 'note_auto');
+  assert.equal(none.length, 0, 'cap already used up this week');
+  const two = buildDescriptors(tri, emptyAud, { note_auto: 3 }).filter((d) => d.payload.op === 'note_auto');
+  assert.equal(two.length, 2);
+});

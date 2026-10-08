@@ -38,9 +38,10 @@ export function triageIsStale(ctx, vault, saved) {
   return false;
 }
 
-export function buildDescriptors(tri, aud) {
+/** used = proposals already created this ISO week per op, so the weekly caps hold across re-runs. */
+export function buildDescriptors(tri, aud, used = {}) {
   const out = [];
-  const cs = tri.items.filter((i) => i.class === 'c').slice(0, MAX_TEACH);
+  const cs = tri.items.filter((i) => i.class === 'c').slice(0, Math.max(0, MAX_TEACH - (used.queue_teach || 0)));
   for (const c of cs) {
     out.push({
       kind: 'teach',
@@ -48,7 +49,7 @@ export function buildDescriptors(tri, aud) {
       payload: { op: 'queue_teach', title: c.title, url: c.url, kind: kindOfItem(c), ...(c.file ? { file: c.file } : {}), project: c.project, minutes: c.minutes },
     });
   }
-  for (const b of tri.items.filter((i) => i.class === 'b').slice(0, MAX_AUTO)) {
+  for (const b of tri.items.filter((i) => i.class === 'b').slice(0, Math.max(0, MAX_AUTO - (used.note_auto || 0)))) {
     out.push({
       kind: 'auto',
       summary: [`자동 적용 후보 — 이 업데이트/변경을 시스템에 반영할까요? ${b.title}`, `이유: ${b.reason}`],
@@ -108,7 +109,12 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const tri = !triageIsStale(ctx, vault, saved) ? saved : await triage(ctx, { week, now });
   const aud = await audit(ctx, { now });
   const events = recentEvents(vault, 7, now);
-  const descriptors = buildDescriptors(tri, aud);
+  // Weekly caps count proposals already created this week (a re-run or --fresh must not add more).
+  const used = {};
+  for (const p of listProposals(vault)) {
+    if (p.createdAt && isoWeek(new Date(p.createdAt)) === week && p.payload?.op) used[p.payload.op] = (used[p.payload.op] || 0) + 1;
+  }
+  const descriptors = buildDescriptors(tri, aud, used);
   const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString() });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
