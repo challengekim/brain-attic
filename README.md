@@ -153,7 +153,7 @@ In Claude Code or Codex, the `attic-teach` skill runs the same loop as a convers
 | `projectsFile` | Defaults to `<vault>/_attic/projects.md`. |
 | `sources[]` | `{type:"rss", name, url}` or `{type:"github", name, repo:"owner/name"}` (-> `releases.atom`). |
 | `llm` | `{runner:"claude"\|"codex"\|"none", model, timeoutMs, allowCodexWithUntrusted}`. Defaults: claude -> `haiku`, codex -> `gpt-6-luna`. `codex` is refused for calls that carry external text unless `allowCodexWithUntrusted` is `true` (see Security boundary). |
-| `triage.include[]` | **Folders** (relative to the vault), not globs. Notes modified in the last 7 days are read (`title`, `url`, `summary`, `tags` from frontmatter). |
+| `triage.include[]` | **Folders** (relative to the vault), not globs. Notes modified in the last 7 days are read (`title`, `url`, `summary`, `tags` from frontmatter). Empty by default; `_attic/saved/` (written by `attic save`) is always read without being listed. |
 | `triage.weeklyMinutes` | Time budget for c items (default 180). |
 | `audit.paths[]` | Directories to scan for `.md .sh .mjs .py .toml .json`. |
 | `radar` | `priceThreshold` (0.2), `openrouterUrl`, `kieLlmsUrl`. |

@@ -148,7 +148,7 @@ Claude Code·Codex 에서는 같은 루프를 `attic-teach` 스킬로 대화하�
 | `projectsFile` | 기본은 `<vault>/_attic/projects.md`. |
 | `sources[]` | `{type:"rss", name, url}` 또는 `{type:"github", name, repo:"owner/name"}` (`releases.atom` 으로 변환). |
 | `llm` | `{runner:"claude"\|"codex"\|"none", model, timeoutMs, allowCodexWithUntrusted}`. 기본 모델: claude `haiku`, codex `gpt-6-luna`. 외부 텍스트가 들어가는 호출에서 `codex` 는 `allowCodexWithUntrusted: true` 가 아니면 거부됩니다(보안 경계 참고). |
-| `triage.include[]` | 글롭이 아니라 **폴더 목록**(볼트 기준 상대 경로). 최근 7일 수정된 `.md` 의 frontmatter(`title`, `url`, `summary`, `tags`)를 읽습니다. |
+| `triage.include[]` | 글롭이 아니라 **폴더 목록**(볼트 기준 상대 경로). 최근 7일 수정된 `.md` 의 frontmatter(`title`, `url`, `summary`, `tags`)를 읽습니다. 기본은 비어 있고, `attic save` 가 쓰는 `_attic/saved/` 는 여기 적지 않아도 항상 읽습니다. |
 | `triage.weeklyMinutes` | c 항목의 주간 시간 예산(기본 180). |
 | `audit.paths[]` | `.md .sh .mjs .py .toml .json` 을 훑을 디렉터리 목록. |
 | `radar` | `priceThreshold`(0.2), `openrouterUrl`, `kieLlmsUrl`. |
