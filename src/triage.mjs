@@ -52,10 +52,11 @@ export function gatherItems(ctx, week, now = new Date()) {
     const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
     readNotes(dir, 'vault');
   }
-  // Duplicates (same URL, or same source+title) are kept but flagged: they become d without an LLM call.
+  // Duplicates (same URL, or same source+title for feed items) are kept but flagged: they become d without an LLM call.
+  // A note without a URL is identified by its file, never by its (possibly shortened) title.
   const seen = new Map();
   return items.map((it, i) => {
-    const k = it.url || `${it.source}:${it.title}`;
+    const k = it.url || (it.file ? `file:${it.file}` : `${it.source}:${it.title}`);
     const dupOf = seen.get(k);
     if (!dupOf) seen.set(k, `i${i + 1}`);
     return { ...it, id: `i${i + 1}`, ...(dupOf ? { dupOf } : {}) };

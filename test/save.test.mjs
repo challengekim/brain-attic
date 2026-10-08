@@ -9,7 +9,7 @@ import { gatherItems, triage } from '../src/triage.mjs';
 import { review, triageIsStale, systemReviewDescriptor, buildDescriptors, kindOfItem } from '../src/review.mjs';
 import { listProposals } from '../src/proposals.mjs';
 import { atticPath, ensureSkeleton, parseFrontmatter } from '../src/vault.mjs';
-import { writeJson } from '../src/util.mjs';
+import { writeJson, isoWeek as isoWeekOf } from '../src/util.mjs';
 
 const llm = { runner: 'claude', model: null, timeoutMs: 20000 };
 
@@ -104,4 +104,15 @@ test('kindOfItem: a saved link is read from the web later, a saved memo from the
   assert.equal(kindOfItem({ source: 'saved', file: '_attic/saved/x.md', url: 'https://e.test/a' }), 'url');
   assert.equal(kindOfItem({ source: 'saved', file: '_attic/saved/y.md', url: '' }), 'vault');
   assert.equal(kindOfItem({ source: 'vault', file: 'notes/z.md', url: 'https://e.test/b' }), 'vault');
+});
+
+test('two URL-less memos with the same title are both classified (not deduplicated by title)', () => {
+  const ctx = testCtx();
+  const now = new Date();
+  save(ctx, { memo: '같은 첫 줄\n본문 A', now });
+  save(ctx, { memo: '같은 첫 줄\n본문 B', now: new Date(now.getTime() + 1) });
+  const week = isoWeekOf(now);
+  const items = gatherItems(ctx, week, now).filter((i) => i.source === 'saved');
+  assert.equal(items.length, 2);
+  assert.ok(items.every((i) => !i.dupOf));
 });
