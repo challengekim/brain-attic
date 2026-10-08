@@ -22,7 +22,7 @@ const RUBRIC_KEYS = ['accuracy', 'completeness', 'own_words', 'example'];
 
 const HELP = `attic teach — 설명 → 퀴즈 → 내가 설명하기 → 채점 → 체화 노트
 
-사용:
+사용법:
   attic teach <파일|URL|"주제">     새로 배운다 (터미널이 아니면 --generate-only 로 동작)
   attic teach --generate-only <…>   설명·퀴즈·질문만 만들어 노트로 저장(대화 없음)
   attic teach --due                 오늘 복습할 노트 + 승인된 대기열
@@ -340,7 +340,7 @@ export async function teach(argv, ctx) {
     string: ['review', 'questions', 'model', 'lang'],
   });
   const positional = flags._;
-  if (flags.help) { ctx.log.info(HELP); return 0; }
+  if (flags.help || flags.h) { ctx.log.info(HELP); return 0; }
   const vault = requireVault(ctx);
 
   if (flags.queue || flags.due) {
