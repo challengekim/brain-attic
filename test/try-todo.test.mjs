@@ -289,3 +289,31 @@ test('try ranking: priority first, then notes saved with a judgement, then usage
   assert.match(sheet, /가장 먼저/);
   assert.match(sheet, /그 밖의 후보 4건/);
 });
+
+test('review fixes: config option prefixes survive; a live delivery cannot be resolved; a saved note beats a feed copy', async () => {
+  const p = { id: 'attic-000000000000', payload: { title: 'T', project: 'casebook', next: 'n', check: 'c' } };
+  const argv = renderTodoArgv({ argv: ['todo', '--title={title}', '--due={due}', '{project}'], dueDays: 3 }, { ...p, payload: { ...p.payload, project: '-x' } }, { now: NOW });
+  assert.equal(argv[1], '--title=[attic] -x: T');
+  assert.match(argv[2], /^--due=\d{4}-\d{2}-\d{2}$/);
+  assert.equal(argv[3], '·-x');
+
+  const ctx = testCtx(); ensureSkeleton(ctx.vault);
+  const q = approved(ctx);
+  fs.mkdirSync(atticPath(ctx.vault, 'state', 'todo'), { recursive: true });
+  fs.writeFileSync(atticPath(ctx.vault, 'state', 'todo', `${q.id}.lock`), String(process.pid)); // this test process is alive
+  const r = getProposal(ctx.vault, q.id); r.todo = { state: 'delivering', at: 'x' }; saveProposal(ctx.vault, r);
+  assert.throws(() => resolveTodo(ctx.vault, q.id, 'retry'), /진행 중/);
+  fs.writeFileSync(atticPath(ctx.vault, 'state', 'todo', `${q.id}.lock`), '999999999'); // owner gone
+  resolveTodo(ctx.vault, q.id, 'retry');
+  assert.equal(getProposal(ctx.vault, q.id).todo, undefined);
+
+  const c2 = testCtx({ config: { triage: { include: ['Refs'] } } }); ensureSkeleton(c2.vault);
+  fs.mkdirSync(path.join(c2.vault, 'Refs'));
+  fs.writeFileSync(path.join(c2.vault, 'Refs', 'mine.md'), '---\ntitle: 내 노트\nsource: https://e.test/same\nmy_relevance: 내 판단\n---\n');
+  fs.writeFileSync(atticPath(c2.vault, 'inbox', `${new Date().toISOString().slice(0, 10)}.md`), '### [Feed copy](https://e.test/same)\n- source: F\n> s\n');
+  const items = gatherItems(c2, isoWeek(new Date()), new Date());
+  const mine = items.find((i) => i.title === '내 노트');
+  const feed = items.find((i) => i.title === 'Feed copy');
+  assert.equal(mine.dupOf, undefined, 'the saved note is kept');
+  assert.equal(feed.dupOf, mine.id, 'the feed copy is the duplicate');
+});

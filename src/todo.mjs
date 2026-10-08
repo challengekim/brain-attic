@@ -57,7 +57,11 @@ export function tryPrompt(p) {
 
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
-/** argv with placeholders filled. A filled value starting with "-" gets a leading "·" so it cannot become an option. */
+/**
+ * argv with placeholders filled. When an argument STARTS with a placeholder and the filled value starts with "-", it gets
+ * a leading "·" so model-written text cannot become an option. Option prefixes written in the config (--title={title})
+ * are the user's and stay as they are.
+ */
 export function renderTodoArgv(cfg, p, { vault, now = new Date() } = {}) {
   const x = p.payload;
   const decided = Number.isFinite(Date.parse(p.decidedAt)) ? new Date(p.decidedAt) : now;
@@ -76,14 +80,24 @@ export function renderTodoArgv(cfg, p, { vault, now = new Date() } = {}) {
   return cfg.argv.map((a, i) => {
     if (i === 0 || !/\{(title|body|due|tags|project|id|url)\}/.test(a)) return a;
     const v = a.replace(/\{(title|body|due|tags|project|id|url)\}/g, (_, k) => values[k]);
-    return v.startsWith('-') ? `·${v}` : v;
+    return a.startsWith('{') && v.startsWith('-') ? `·${v}` : v;
   });
 }
 
 function takeLock(vault, id) {
   atticMkdir(vault, LOCK_DIR);
-  try { fs.closeSync(fs.openSync(atticWritePath(vault, lockRel(id)), 'wx')); return true; }
+  let fd;
+  try { fd = fs.openSync(atticWritePath(vault, lockRel(id)), 'wx'); }
   catch (e) { if (e.code === 'EEXIST') return false; throw e; }
+  try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); } // owner, so resolve can tell a live delivery
+  return true;
+}
+/** True while the process that took the lock is still running (a delivery in progress, not an abandoned one). */
+export function lockOwnerAlive(vault, id) {
+  let pid;
+  try { pid = Number(fs.readFileSync(atticPath(vault, lockRel(id)), 'utf8').trim()); } catch { return false; }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 function dropLock(vault, id) { try { fs.unlinkSync(atticWritePath(vault, lockRel(id))); } catch { /* gone */ } }
 export function isLocked(vault, id) { return fs.existsSync(atticPath(vault, lockRel(id))); }
@@ -147,6 +161,8 @@ export function todoStatus(vault) {
 export function resolveTodo(vault, id, how, now = new Date()) {
   const p = getProposal(vault, id);
   if (!p || p.payload?.op !== 'try_in_project') throw new Error(`해 볼 것 제안이 아닙니다: ${id}`);
+  // A delivery still running may yet create the task: never unlock it from under the running process.
+  if (p.todo?.state !== 'uncertain' && lockOwnerAlive(vault, id)) throw new Error(`${id}: 배달이 아직 진행 중입니다 — 끝난 뒤 다시 확인하세요`);
   if (how === 'delivered') {
     p.todo = { ...p.todo, state: 'delivered', resolvedAt: now.toISOString(), resolvedBy: 'cli' };
     if (p.status === 'approved') { p.status = 'applied'; p.appliedAt = now.toISOString(); }

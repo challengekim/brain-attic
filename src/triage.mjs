@@ -93,19 +93,21 @@ export function gatherItems(ctx, week, now = new Date()) {
       });
     }
   };
-  // Manual saves first: when the same link also arrived through a feed, the one the user saved is kept.
+  // The user's own notes first (manual saves, then included vault folders): when the same link also arrived through a
+  // feed, the dedupe below keeps the first one, so the note the user saved (often with their own judgement) survives
+  // and the feed copy becomes the duplicate.
   const saved = savedDir(vault);
   if (saved) readNotes(saved, 'saved');
+  for (const folder of ctx.config.triage?.include || []) {
+    const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
+    readNotes(dir, 'vault');
+  }
   const inboxDir = atticPath(vault, 'inbox');
   let names = [];
   try { names = fs.readdirSync(inboxDir).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)); } catch { /* none */ }
   for (const n of names) {
     const d = new Date(n.slice(0, 10) + 'T00:00:00');
     if (d >= start && d < end) items.push(...parseInbox(fs.readFileSync(path.join(inboxDir, n), 'utf8'), n.slice(0, 10)));
-  }
-  for (const folder of ctx.config.triage?.include || []) {
-    const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
-    readNotes(dir, 'vault');
   }
   // Duplicates (same URL, or same source+title for feed items) are kept but flagged: they become d without an LLM call.
   // A note without a URL is identified by its file, never by its (possibly shortened) title.
