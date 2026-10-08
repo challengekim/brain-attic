@@ -62,9 +62,9 @@ those lines. Edit `config.json` (see below) to add sources, folders to triage, a
 | `attic doctor [--json]` | Detect git, gh, claude, codex, aws, railway, gws, aside, playwright, Chrome, vault, Obsidian. Prints what each is for and what is off without it. Only `--version` is ever run. |
 | `attic collect` | Fetch `config.sources`; normalize URLs (utm removed, trailing slash); dedupe through a 60-day ledger `_attic/state/seen.json`; append to the day's inbox. |
 | `attic radar [--json]` | Snapshot OpenRouter `/api/v1/models` and the kie.ai docs index (`llms.txt`); report new models, price moves of 20% or more, new image/audio/video output modalities, newly documented kie.ai models/endpoints. First run = baseline only. Network failure = "skipped", old snapshot kept. |
-| `attic triage [--week YYYY-Www]` | Classify this week's inbox + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it), **c** (invest time: read deeply, write, explain). c gets minutes; anything over `triage.weeklyMinutes` (default 180) is demoted to a and the sheet says so. |
+| `attic triage [--week YYYY-Www]` | Classify this week's inbox + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it; the sheet lists the top 15 and up to 5 per week become `note_auto` proposals — approving one only writes `_attic/approved/<id>.prompt.md` for a human to run, nothing is applied automatically), **c** (invest time: read deeply, write, explain). c gets minutes; anything over `triage.weeklyMinutes` (default 180) is demoted to a and the sheet says so. |
 | `attic audit [--json]` | List model IDs and CLI tools mentioned under `audit.paths`, cross-check recent radar events, suggest **improvement candidates**. |
-| `attic review [--dry-run] [--json]` | triage + audit + radar -> `_attic/reviews/YYYY-Www.md`, proposals in `_attic/proposals/<id>.json` (id = `attic-` + sha256 prefix, TTL 7 days), notifications. `--dry-run`: sheet only. |
+| `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar -> `_attic/reviews/YYYY-Www.md`, proposals in `_attic/proposals/<id>.json` (id = `attic-` + sha256 prefix, TTL 7 days), notifications. `--dry-run`: sheet only (no proposals saved). The week's saved triage is reused unless it had runner errors, was empty, or the inbox/included notes changed after it; `--fresh` forces a new classification. |
 | `attic approve <id>` / `reject <id>` / `pending` | Decide from the terminal. |
 | `attic sync` | Pull answers from two-way adapters (decision-api, github-issues); acks **only ids that exist locally**. |
 | `attic apply` | Approved proposals only. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` edit config/files directly; anything else only writes `_attic/approved/<id>.prompt.md` for a human to run through `claude -p`. |
@@ -110,6 +110,7 @@ attic teach --queue                         # c items you approved in the weekly
 attic teach --next                          # start with the first queued item
 attic teach --due                           # reviews due today
 attic teach --review <slug>                 # review
+attic teach --save-session session.json     # store a result made in conversation by the attic-teach skill
 ```
 
 1. The model explains and draws a mermaid diagram of the parts.

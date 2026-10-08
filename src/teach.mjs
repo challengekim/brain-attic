@@ -29,6 +29,7 @@ const HELP = `attic teach — 설명 → 퀴즈 → 내가 설명하기 → 채�
   attic teach --queue               승인된 c 항목(설명하기 대기열)
   attic teach --next                대기열 맨 앞 항목으로 시작
   attic teach --review <slug>       저장된 노트로 다시 설명해 보기(복습)
+  attic teach --save-session <json> 대화(스킬)로 만든 pack + 세션을 같은 형식으로 저장
 옵션:
   --questions N   퀴즈 문항 수 (기본 4)
   --model M       이 명령에만 쓸 모델 (기본: config.teach.model, 없으면 claude=sonnet / codex=gpt-6.1-sol)
@@ -180,8 +181,9 @@ function makeIo() {
 
 // ---------------------------------------------------------------- source
 
-async function loadSource(ctx, src) {
+async function loadSource(ctx, src, { urlOnly = false } = {}) {
   if (!src) throw new Error('배울 대상을 주세요: 파일 경로, URL, 또는 "주제"');
+  if (urlOnly && !/^https?:\/\//i.test(src)) throw new Error('URL 이 http(s) 가 아닙니다');
   if (/^https?:\/\//i.test(src)) {
     const html = await fetchText(ctx, src, { source: 'teach URL' });
     const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ')
@@ -193,6 +195,36 @@ async function loadSource(ctx, src) {
     return { text: truncate(fs.readFileSync(p, 'utf8'), MAX_SOURCE_CHARS), label: path.basename(p), source: p, kind: 'file' };
   }
   return { text: `주제: ${src}`, label: '주제', source: src, kind: 'topic' };
+}
+
+/** Queue item -> where its text may come from. Old items without `kind` are inferred conservatively. */
+export function queueKindOf(item) {
+  if (['url', 'vault', 'topic'].includes(item?.kind)) return item.kind;
+  return /^https?:\/\//i.test(String(item?.url || '')) ? 'url' : 'topic';
+}
+
+/** Read a vault note by a vault-relative path. Refuses absolute paths, `..`, symlinks (file or any parent) and non-.md. */
+export function loadVaultFile(vault, file) {
+  if (typeof file !== 'string' || !file.trim() || path.isAbsolute(file) || file.includes('\0')) throw new Error('대기열 항목의 file 이 볼트 기준 상대경로가 아닙니다');
+  const rel = path.normalize(file);
+  if (rel === '..' || rel.startsWith('..' + path.sep) || !/\.md$/i.test(rel)) throw new Error('대기열 항목의 file 이 볼트 안의 .md 가 아닙니다');
+  const abs = path.join(vault, rel);
+  let real; let realVault;
+  try { realVault = fs.realpathSync(vault); real = fs.realpathSync(abs); } catch { throw new Error(`볼트에서 파일을 찾지 못했습니다: ${rel}`); }
+  // realpath equal to <realVault>/<rel> means no component (file or parent dir) is a symlink and it stays inside.
+  if (real !== path.join(realVault, rel) || fs.lstatSync(abs).isSymbolicLink() || !fs.statSync(real).isFile()) throw new Error(`볼트 밖이거나 심볼릭 링크라 읽지 않습니다: ${rel}`);
+  return { text: truncate(fs.readFileSync(real, 'utf8'), MAX_SOURCE_CHARS), label: path.basename(rel), source: rel, kind: 'vault' };
+}
+
+async function loadQueued(ctx, vault, item) {
+  const kind = queueKindOf(item);
+  if (kind === 'url') {
+    if (!/^https?:\/\//i.test(String(item.url || ''))) throw new Error('대기열 항목의 URL 이 http(s) 가 아닙니다');
+    return loadSource(ctx, item.url, { urlOnly: true });
+  }
+  if (kind === 'vault') return loadVaultFile(vault, item.file);
+  // The title came from a feed or a note, so it is untrusted text even though no file or URL is read.
+  return { text: `주제: ${item.title}`, label: '주제', source: String(item.title || ''), kind: 'queue-topic' };
 }
 
 function teachOpts(ctx, override) {
@@ -334,10 +366,51 @@ export function listDue(vault, today = dateStr()) {
     .sort((a, b) => String(a.next_review).localeCompare(String(b.next_review)));
 }
 
+const SESSION_SOURCE_KINDS = ['topic', 'url', 'file', 'vault', 'conversation'];
+
+/**
+ * `attic teach --save-session <json>`: the attic-teach skill ran the loop in conversation; this stores its result
+ * in the same files (pack.json + md) the CLI writes, so --review / --due work on it.
+ * JSON: { pack, source?, sourceKind?, session?: { quizCorrect, answers: [{prompt, answer, grade}] } }.
+ * Scores are recomputed here from the grades; the skill's own arithmetic is not trusted.
+ */
+export function saveSession(ctx, vault, file) {
+  const p = path.resolve(String(file).replace(/^~(?=\/)/, ctx.home));
+  let input;
+  try {
+    if (fs.statSync(p).size > 2_000_000) throw new Error('파일이 너무 큽니다 (2MB 초과)');
+    input = JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (e) { throw new Error(`세션 JSON 을 읽지 못했습니다: ${e.message}`); }
+  if (!input || typeof input !== 'object') throw new Error('세션 JSON 이 객체가 아닙니다');
+  const pack = input.pack;
+  try { validatePack(pack, 2); } catch (e) { throw new Error(`pack 이 올바르지 않습니다: ${e.message}`); }
+  const sourceKind = SESSION_SOURCE_KINDS.includes(input.sourceKind) ? input.sourceKind : 'conversation';
+  const source = truncate(String(input.source ?? '대화'), 300);
+  let session = null;
+  if (input.session) {
+    const s = input.session;
+    if (!Array.isArray(s.answers) || !s.answers.length) throw new Error('session.answers 가 비어 있습니다');
+    const answers = s.answers.map((a, i) => {
+      if (!a || typeof a.prompt !== 'string' || typeof a.answer !== 'string') throw new Error(`session.answers[${i}] 형식 (prompt/answer 문자열)`);
+      try { validateGrade(a.grade); } catch (e) { throw new Error(`session.answers[${i}].grade: ${e.message}`); }
+      return { prompt: a.prompt, answer: a.answer, grade: a.grade, percent: gradeToPercent(a.grade) };
+    });
+    const total = pack.quiz.length;
+    const correct = Number(s.quizCorrect);
+    if (!Number.isInteger(correct) || correct < 0 || correct > total) throw new Error(`session.quizCorrect 는 0~${total} 정수`);
+    session = { date: dateStr(), score: combinedScore(correct, total, answers.map((a) => a.percent)), quizCorrect: correct, quizTotal: total, answers };
+  }
+  const slug = slugify(pack.title);
+  const prior = sessionsFromPackFile(notePaths(vault, slug).pack);
+  const { md, meta } = saveNote(vault, slug, pack, session ? [...prior, session] : prior, source, sourceKind);
+  ctx.log.info(`저장: ${md}\n${session ? `점수 ${meta.score} · 다음 복습 ${meta.next_review} · ${meta.status}` : '세션 없이 pack 만 저장했습니다 (복습 대기)'}`);
+  return 0;
+}
+
 export async function teach(argv, ctx) {
   const flags = parseArgs(argv, {
     bool: ['due', 'generate-only', 'help', 'json', 'queue', 'next'],
-    string: ['review', 'questions', 'model', 'lang'],
+    string: ['review', 'questions', 'model', 'lang', 'save-session'],
   });
   const positional = flags._;
   if (flags.help || argv.includes('-h')) { ctx.log.info(HELP); return 0; }
@@ -359,11 +432,14 @@ export async function teach(argv, ctx) {
     return 0;
   }
 
+  if (flags['save-session']) return saveSession(ctx, vault, flags['save-session']);
+
   let queued = null;
+  let queuedSrc = null;
   if (flags.next) {
     queued = readQueue(vault)[0] || null;
     if (!queued) { ctx.log.info('설명하기 대기열이 비어 있습니다.'); return 0; }
-    positional.splice(0, positional.length, queued.url || queued.title);
+    queuedSrc = await loadQueued(ctx, vault, queued); // by the stored kind only; never a free-form path
   }
 
   const opts = teachOpts(ctx, flags.model);
@@ -375,6 +451,10 @@ export async function teach(argv, ctx) {
       const slug = path.basename(flags.review).replace(/\.(md|pack\.json)$/, '');
       const { pack: packFile } = notePaths(vault, slug);
       const saved = readJson(packFile, null);
+      if (!saved && fs.existsSync(notePaths(vault, slug).md)) {
+        ctx.log.warn(`이 노트는 대화로 만든 것이라 pack 이 없습니다 — \`attic teach <원문>\` 으로 다시 만드세요 (${slug})`);
+        return 1;
+      }
       if (!saved) throw new Error(`노트를 찾지 못했습니다: ${slug} (${packFile})`);
       if (!io) throw new Error('복습은 대화형 터미널에서만 됩니다.');
       // Trust is decided when the pack was made and stored with it. Missing or anything but 'topic' -> untrusted,
@@ -387,7 +467,7 @@ export async function teach(argv, ctx) {
     }
 
     const questions = Math.max(2, Math.min(10, Number(flags.questions) || 4));
-    const src = await loadSource(ctx, positional.join(' ').trim());
+    const src = queuedSrc || await loadSource(ctx, positional.join(' ').trim());
     const external = src.kind !== 'topic';
     ctx.log.info(`설명·퀴즈·질문을 만드는 중입니다 (${opts.runner}${opts.model ? `/${opts.model}` : ''})…`);
     const pack = await runJSON({

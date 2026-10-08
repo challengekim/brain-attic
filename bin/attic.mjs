@@ -15,13 +15,13 @@ const HELP = {
   radar [--json]                      OpenRouter·kie.ai 스냅샷 diff
   triage [--week YYYY-Www]            이번 주 항목을 a/b/c 로 분류
   audit                               스킬/스크립트의 모델·도구 목록화 + 개선 후보
-  review [--dry-run] [--json]         승인 시트 + 제안 발송
+  review [--dry-run] [--fresh] [--json] 승인 시트 + 제안 발송
   approve <id> | reject <id> | pending
   sync                                양방향 어댑터에서 답을 가져오고 자기 것만 ack
   apply                               승인된 제안 적용 (화이트리스트 연산만 직접)
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
   schedule install|uninstall|status [--dry-run]
-  teach <주제|파일|URL> [--next|--queue|--due|--review <slug>]   설명 → 퀴즈 → 내가 설명하기
+  teach <주제|파일|URL> [--next|--queue|--due|--review <slug>|--save-session <json>]   설명 → 퀴즈 → 내가 설명하기
 `,
   init: '사용법: attic init [--vault <path>] [--yes]\n  config($XDG_CONFIG_HOME/brain-attic/config.json)와 볼트 _attic/ 골격을 만들고, 스킬을 ~/.claude/skills, ~/.codex/skills 에 심링크합니다. 있는 것은 덮지 않습니다.',
   doctor: '사용법: attic doctor [--json]\n  git/gh/claude/codex/aws/railway/gws/aside/playwright/Chrome/볼트/obsidian 유무와 용도.',

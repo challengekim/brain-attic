@@ -16,6 +16,7 @@ export const DEFAULTS = {
 };
 
 export function configPath(env = process.env) {
+  if (env.BRAIN_ATTIC_CONFIG) return env.BRAIN_ATTIC_CONFIG; // pinned by `attic schedule install`
   const base = env.XDG_CONFIG_HOME || path.join(homeDir(env), '.config');
   return path.join(base, 'brain-attic', 'config.json');
 }

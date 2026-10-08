@@ -65,6 +65,8 @@ export async function collect(ctx, { now = new Date() } = {}) {
       let added = 0;
       let skipped = 0;
       for (const it of parseFeed(xml)) {
+        // A feed is untrusted: only web links may enter the inbox (a `~/file` or `file://` link must never reach a reader).
+        if (!/^https?:\/\//i.test(it.url)) { skipped++; continue; }
         const key = normalizeUrl(it.url);
         if (seen[key]) { res.duplicates++; continue; }
         // Mark as seen even when skipped, so old items do not come back next run.

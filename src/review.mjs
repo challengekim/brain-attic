@@ -1,6 +1,8 @@
 // attic review: triage + audit + radar -> approval sheet _attic/reviews/YYYY-Www.md, proposals, notifications.
 import { requireVault } from './config.mjs';
-import { atticPath, ensureSkeleton, writeAttic } from './vault.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { atticPath, ensureSkeleton, listRecentMd, writeAttic } from './vault.mjs';
 import { isoWeek, readJson } from './util.mjs';
 import { triage } from './triage.mjs';
 import { audit } from './audit.mjs';
@@ -9,6 +11,32 @@ import { createProposal, expireStale, listProposals, proposalId } from './propos
 import { dispatch } from './notify/index.mjs';
 
 const MAX_TEACH = 8;
+/** b = "the system should apply this". Each one is a question to a human, so cap them per week. */
+export const MAX_AUTO = 5;
+export const SHEET_B_MAX = 15;
+
+/** Where a triage item's text may later be read from: a vault note, a web link, or just its title. */
+export function kindOfItem(i) {
+  if (i.file) return 'vault';
+  return /^https?:\/\//i.test(String(i.url || '')) ? 'url' : 'topic';
+}
+
+/** True when this week's saved triage should not be reused (failed run, empty, or inputs changed after it). */
+export function triageIsStale(ctx, vault, saved) {
+  if (!saved || !Array.isArray(saved.items)) return true;
+  if ((saved.errors || []).length || saved.items.length === 0) return true;
+  const since = Date.parse(saved.generatedAt);
+  if (!Number.isFinite(since)) return true;
+  const inbox = atticPath(vault, 'inbox');
+  try {
+    for (const n of fs.readdirSync(inbox)) if (/\.md$/.test(n) && fs.statSync(path.join(inbox, n)).mtimeMs > since) return true;
+  } catch { /* no inbox */ }
+  for (const folder of ctx.config.triage?.include || []) {
+    const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
+    if (listRecentMd(dir, { sinceMs: since + 1 }).length) return true;
+  }
+  return false;
+}
 
 export function buildDescriptors(tri, aud) {
   const out = [];
@@ -17,7 +45,15 @@ export function buildDescriptors(tri, aud) {
     out.push({
       kind: 'teach',
       summary: [`깊게 읽고 설명해 볼 것: ${c.title}`, `이유: ${c.reason}`, `예상 ${c.minutes}분${c.project ? ` · 프로젝트: ${c.project}` : ''}`],
-      payload: { op: 'queue_teach', title: c.title, url: c.url, project: c.project, minutes: c.minutes },
+      payload: { op: 'queue_teach', title: c.title, url: c.url, kind: kindOfItem(c), ...(c.file ? { file: c.file } : {}), project: c.project, minutes: c.minutes },
+    });
+  }
+  for (const b of tri.items.filter((i) => i.class === 'b').slice(0, MAX_AUTO)) {
+    out.push({
+      kind: 'auto',
+      summary: [`자동 적용 후보 — 이 업데이트/변경을 시스템에 반영할까요? ${b.title}`, `이유: ${b.reason}`],
+      // Not whitelisted on purpose: apply only writes _attic/approved/<id>.prompt.md for a human to run.
+      payload: { op: 'note_auto', title: b.title, url: b.url, kind: kindOfItem(b), ...(b.file ? { file: b.file } : {}), project: b.project },
     });
   }
   for (const s of aud.suggestions) {
@@ -38,10 +74,10 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
   L.push('', '## 2. 분류 결과', '',
     `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / 미분류 ${tri.counts.unclassified} — c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}`);
   if (tri.errors.length) L.push(`- 러너 오류: ${tri.errors[0]} -> 해당 항목은 미분류로 남겼습니다 (지어내지 않음)`);
-  for (const k of ['c', 'a']) {
-    const rows = tri.items.filter((i) => i.class === k).slice(0, k === 'a' ? 15 : 30);
+  for (const k of ['c', 'b', 'a']) {
+    const rows = tri.items.filter((i) => i.class === k).slice(0, k === 'c' ? 30 : 15);
     if (!rows.length) continue;
-    L.push('', `### ${k === 'c' ? 'c — 깊게 읽고 쓰고 설명' : 'a — 인지만'}`);
+    L.push('', `### ${k === 'c' ? 'c — 깊게 읽고 쓰고 설명' : k === 'b' ? `b — 자동 적용 후보 (상위 ${SHEET_B_MAX}, 제안은 주당 최대 ${MAX_AUTO}건)` : 'a — 인지만'}`);
     for (const r of rows) {
       const title = r.title.replace(/[\[\]]/g, '');
       const link = r.url ? `[${title}](${r.url})` : r.file ? `[[${r.file.replace(/\.md$/, '')}|${title}]]` : title;
@@ -66,9 +102,10 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   week = week || isoWeek(now);
   const expired = expireStale(vault, now);
   // Reuse this week's triage if it exists: the sheet must show what was classified, and a re-run
-  // costs LLM calls and can come out slightly different. --fresh forces a new classification.
+  // costs LLM calls and can come out slightly different. --fresh forces a new classification; a saved result with
+  // runner errors, no items, or older than the current inbox/included notes is not reused.
   const saved = fresh ? null : readJson(atticPath(vault, 'triage', `${week}.json`), null);
-  const tri = saved && Array.isArray(saved.items) ? saved : await triage(ctx, { week, now });
+  const tri = !triageIsStale(ctx, vault, saved) ? saved : await triage(ctx, { week, now });
   const aud = await audit(ctx, { now });
   const events = recentEvents(vault, 7, now);
   const descriptors = buildDescriptors(tri, aud);

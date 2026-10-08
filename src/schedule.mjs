@@ -35,7 +35,15 @@ function envPath(home, nodePath) {
   return [path.dirname(nodePath), '/opt/homebrew/bin', '/usr/local/bin', path.join(home, '.local/bin'), '/usr/bin', '/bin'].filter((v, i, a) => a.indexOf(v) === i).join(':');
 }
 
-export function renderPlist(job, { home, nodePath = process.execPath, binPath = BIN } = {}) {
+/** Env that must survive into launchd/cron so a job reads the same config as the shell that installed it. */
+export function configEnvFor(ctx) {
+  const out = {};
+  if (ctx.env?.XDG_CONFIG_HOME) out.XDG_CONFIG_HOME = ctx.env.XDG_CONFIG_HOME;
+  if (ctx.configPath) out.BRAIN_ATTIC_CONFIG = ctx.configPath;
+  return out;
+}
+
+export function renderPlist(job, { home, nodePath = process.execPath, binPath = BIN, extraEnv = {} } = {}) {
   const logDir = path.join(home, 'Library/Logs/brain-attic');
   const when = Object.entries(job.when).map(([k, v]) => `    <key>${k}</key><integer>${v}</integer>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -56,7 +64,7 @@ ${when}
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>${esc(home)}</string>
-    <key>PATH</key><string>${esc(envPath(home, nodePath))}</string>
+    <key>PATH</key><string>${esc(envPath(home, nodePath))}</string>${Object.entries(extraEnv).map(([k, v]) => `\n    <key>${esc(k)}</key><string>${esc(v)}</string>`).join('')}
   </dict>
   <key>StandardOutPath</key><string>${esc(path.join(logDir, job.name + '.log'))}</string>
   <key>StandardErrorPath</key><string>${esc(path.join(logDir, job.name + '.err.log'))}</string>
@@ -66,12 +74,14 @@ ${when}
 `;
 }
 
-export function renderCronBlock({ home, nodePath = process.execPath, binPath = BIN } = {}) {
+export function renderCronBlock({ home, nodePath = process.execPath, binPath = BIN, extraEnv = {} } = {}) {
   const logDir = path.join(home, '.local/state/brain-attic');
   const pathVal = envPath(home, nodePath);
   if (/[\r\n\0]/.test(pathVal)) throw new Error('crontab 에 넣을 수 없는 줄바꿈/NUL 이 경로에 있습니다');
   const lines = [MARK_BEGIN, `PATH=${pathVal}`];
-  for (const j of JOBS) lines.push(`${j.cron} ${cronQuote(nodePath)} ${cronQuote(binPath)} ${j.cmd} >> ${cronQuote(`${logDir}/${j.name}.log`)} 2>&1`);
+  // Prefix assignments per job line (cron variable lines do not take quoting; `VAR='x' cmd` does).
+  const envPrefix = Object.entries(extraEnv).map(([k, v]) => `${k}=${cronQuote(v)} `).join('');
+  for (const j of JOBS) lines.push(`${j.cron} ${envPrefix}${cronQuote(nodePath)} ${cronQuote(binPath)} ${j.cmd} >> ${cronQuote(`${logDir}/${j.name}.log`)} 2>&1`);
   lines.push(MARK_END);
   return lines.join('\n');
 }
@@ -94,7 +104,7 @@ export async function schedule(ctx, action, { dryRun = false, platform = process
     for (const job of JOBS) {
       const file = path.join(dir, `${labelOf(job)}.plist`);
       if (action === 'install') {
-        const plist = renderPlist(job, { home });
+        const plist = renderPlist(job, { home, extraEnv: configEnvFor(ctx) });
         if (dryRun) { out.push({ job: job.name, file, plist }); continue; }
         ensureDir(dir); ensureDir(path.join(home, 'Library/Logs/brain-attic'));
         fs.writeFileSync(file, plist);
@@ -118,7 +128,7 @@ export async function schedule(ctx, action, { dryRun = false, platform = process
   // linux / other: crontab. Same result shape as macOS: { platform, action, dryRun, jobs: [{ job, ... }], ... }.
   if (!dryRun && !which('crontab', ctx.env)) throw new Error('crontab 명령이 없습니다');
   const cur = dryRun && action !== 'status' ? '' : (await run('crontab', ['-l'], { env: ctx.env })).stdout;
-  const block = renderCronBlock({ home });
+  const block = renderCronBlock({ home, extraEnv: configEnvFor(ctx) });
   const present = cur.includes(MARK_BEGIN);
   if (action === 'status') {
     return { platform, action, dryRun, installed: present, jobs: JOBS.map((j) => ({ job: j.name, installed: present, loaded: null, when: j.label })) };

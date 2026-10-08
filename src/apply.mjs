@@ -56,7 +56,10 @@ export async function apply(ctx, { now = new Date() } = {}) {
         awaitingConfig.push({ p, op });
       } else if (op === 'queue_teach') {
         const q = readJson(atticPath(vault, 'teach', 'queue.json'), []);
-        if (!q.some((x) => x.proposalId === p.id)) q.push({ proposalId: p.id, title: p.payload.title, url: p.payload.url || '', project: p.payload.project || null, minutes: p.payload.minutes || null, queuedAt: now.toISOString() });
+        // kind decides later how --next may read this item; an unknown/missing kind is inferred (http(s) url -> url, else topic).
+        const kind = ['url', 'vault', 'topic'].includes(p.payload.kind) ? p.payload.kind : (/^https?:\/\//i.test(p.payload.url || '') ? 'url' : 'topic');
+        const file = kind === 'vault' && typeof p.payload.file === 'string' ? p.payload.file : undefined;
+        if (!q.some((x) => x.proposalId === p.id)) q.push({ proposalId: p.id, title: p.payload.title, url: p.payload.url || '', kind, ...(file ? { file } : {}), project: p.payload.project || null, minutes: p.payload.minutes || null, queuedAt: now.toISOString() });
         writeAtticJson(vault, 'teach/queue.json', q);
         p.status = 'applied'; p.appliedAt = now.toISOString(); saveProposal(vault, p);
         result.applied.push({ id: p.id, op });

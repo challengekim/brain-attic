@@ -1,7 +1,8 @@
 // Two-way adapter using the `gh` CLI. Proposals become issues (label attic-proposal);
 // a COMMENT saying approve/reject decides them; afterwards we label attic-applied and close.
-// Who may decide: config.allowedUsers if non-empty, else the single login `gh api user` returned at publish time
-// (stored in the proposal's local record). An empty approver list means NOBODY can approve. Labels are never
+// Who may decide: config.allowedUsers when that key is PRESENT (an explicit empty list = nobody can approve, and it
+// revokes approvers stored earlier). Only when the key is ABSENT: the single login `gh api user` returned at publish
+// time (stored in the proposal's local record). Labels are never
 // consulted: GitHub does not tell us who applied a label.
 import { run, which } from '../util.mjs';
 import { decide, getProposal, listProposals, saveProposal } from '../proposals.mjs';
@@ -17,14 +18,16 @@ const decisionOf = (text) => {
   return t === 'approve' || t === 'approved' ? 'approved' : t === 'reject' || t === 'rejected' ? 'rejected' : null;
 };
 
+const hasAllowedKey = (cfg) => cfg.allowedUsers !== undefined;
 function approversFor(cfg) {
+  // Present but not a list (null, string, ...) fails closed: nobody.
   return Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.filter((u) => typeof u === 'string' && u.trim()).map((u) => u.trim().toLowerCase()) : [];
 }
 
 export async function publish(ctx, cfg, proposals) {
   needGh(ctx, cfg);
   let approvers = approversFor(cfg);
-  if (!approvers.length && proposals.some((p) => !p.external?.[KEY]?.number)) {
+  if (!hasAllowedKey(cfg) && proposals.some((p) => !p.external?.[KEY]?.number)) {
     const me = await gh(ctx, ['api', 'user', '--jq', '.login']);
     const login = me.code === 0 ? me.stdout.trim().toLowerCase() : '';
     if (!/^[a-z0-9-]+(\[bot\])?$/.test(login)) throw new Error('github-issues: 승인자를 정할 수 없습니다 (gh api user 실패). config.allowedUsers 를 지정하거나 gh auth login 을 하세요');
@@ -55,7 +58,8 @@ export async function pull(ctx, cfg) {
   for (const p of listProposals(ctx.vault)) {
     const ref = p.external?.[KEY];
     if (!ref?.number || ref.repo !== cfg.repo || ref.done) continue; // only issues WE created for this repo
-    const allowed = new Set(fromConfig.length ? fromConfig : (Array.isArray(ref.approvers) ? ref.approvers : []));
+    // Current config wins, so emptying allowedUsers revokes stored approvers at once. Stored list only if the key is absent.
+    const allowed = new Set(hasAllowedKey(cfg) ? fromConfig : (Array.isArray(ref.approvers) ? ref.approvers : []));
     const r = await gh(ctx, ['issue', 'view', String(ref.number), '--repo', cfg.repo, '--json', 'comments,state']);
     if (r.code !== 0) continue;
     let issue; try { issue = JSON.parse(r.stdout); } catch { continue; }

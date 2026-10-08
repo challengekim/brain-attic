@@ -41,13 +41,14 @@ Read `templates/rules/plain-language.md` in the brain-attic repo (installed at
    follow-up question and let them fill it. Then grade again. One follow-up per question.
 5. **Score.** quiz 30% + teach-back 70% → 0-100. Next review: 1, 3, 7, 21 days by review count;
    under 60 resets to 1 day.
-6. **Save.** If a vault is configured (`attic doctor` shows it, or the user named one), write
-   `<vault>/_attic/teach/<slug>.md` with frontmatter
-   `title, source, created, last_reviewed, reviews, score, quiz_correct, next_review, status, tags: [attic/teach]`
-   and body sections: 설명/Explanation, 구조/Diagram, 퀴즈/Quiz (answers inside `<details>`),
-   내가 설명하기/Teach-back (the learner's answers quoted, scores, missing points, feedback).
-   If the note exists, append a new dated session and update the frontmatter. Ask before writing
-   outside `_attic/`.
+6. **Save.** Do **not** write the markdown note yourself. Write one JSON file (in a temp dir) and let the CLI store it,
+   so the note and its `pack.json` have the same format as `attic teach` makes (and `--review` / `--due` work on it):
+   `{"pack": {title, explanation, diagram_mermaid, terms, quiz: [{question, choices[4], answer 0-3, why}], teach_back: [{prompt, rubric[]}]},
+   "source": "<file/URL/topic>", "sourceKind": "topic|url|file|vault|conversation",
+   "session": {"quizCorrect": N, "answers": [{"prompt", "answer": "<the learner's words>", "grade": {"scores": {"accuracy","completeness","own_words","example"} (0-4), "missing": [], "wrong": [], "feedback"}}]}}`
+   then run `attic teach --save-session <that json file>`. The CLI recomputes the scores, appends a dated session
+   to an existing note, and sets the review date. If the CLI is not installed, say so and give the user the JSON;
+   do not hand-write `_attic/teach/*.md`.
 7. **Close.** One line: score, the weakest point, next review date.
    Suggest `attic teach --review <slug>` or "다시 설명해 볼래요?" for the review day.
 
@@ -56,7 +57,7 @@ Read `templates/rules/plain-language.md` in the brain-attic repo (installed at
 "복습할 거 있어?" / "what is due?": run `attic teach --due` if the CLI exists, else read
 `_attic/teach/*.md` frontmatter and list notes where `next_review <= today` and `status != mastered`.
 For a review, skip the long explanation. Go straight to 2 quiz questions and the teach-back questions
-from the note, then grade and append a session.
+from the note, then grade and save the session with `attic teach --save-session` (same JSON, same slug).
 
 ## Guardrails
 
