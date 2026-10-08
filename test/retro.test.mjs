@@ -24,8 +24,8 @@ test('compute: per-source counts, ratios, approval rate, teach average, silent s
     sourcesConfigured: ['Noisy', 'Quiet', 'Never'],
     month: '2026-09',
   });
-  assert.deepEqual(r.perSource.Noisy, { total: 3, a: 1, b: 1, c: 1, unclassified: 0 });
-  assert.deepEqual(r.perSource.Quiet, { total: 3, a: 0, b: 2, c: 0, unclassified: 1 });
+  assert.deepEqual(r.perSource.Noisy, { total: 3, a: 1, b: 1, c: 1, d: 0, unclassified: 0 });
+  assert.deepEqual(r.perSource.Quiet, { total: 3, a: 0, b: 2, c: 0, d: 0, unclassified: 1 });
   assert.equal(r.counts.b, 3);
   assert.ok(Math.abs(r.ratios.a - 1 / 6) < 1e-9);
   assert.equal(r.approval.byKind.teach.rate, 2 / 3);
@@ -66,4 +66,14 @@ test('retro end-to-end writes the report, reads teach scores and saves proposals
   const md = fs.readFileSync(atticPath(ctx.vault, 'retro', '2026-09.md'), 'utf8');
   assert.match(md, /월간 회고 2026-09/);
   assert.match(md, /평균 점수 80\.0/);
+});
+
+test('compute: d items are counted and do not turn the ratios into NaN/0', () => {
+  const r = compute({
+    triages: [tri('2026-09-02T00:00:00Z', [item('S', 'a'), item('S', 'd'), item('S', 'd'), item('S', 'c')])],
+    proposals: [], teachNotes: [], sourcesConfigured: ['S'], month: '2026-09',
+  });
+  assert.equal(r.perSource.S.d, 2);
+  assert.equal(r.ratios.d, 0.5);
+  assert.equal(r.ratios.a, 0.25);
 });

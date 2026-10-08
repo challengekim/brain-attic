@@ -1,5 +1,6 @@
-// attic triage: this week's inbox + recently modified vault notes -> a/b/c via an LLM runner.
+// attic triage: this week's inbox + manual saves (_attic/saved) + recently modified vault notes -> a/b/c/d via an LLM runner.
 //   a = skim, just be aware   b = no awareness needed (the system should apply it)   c = invest time: read deeply, write, explain
+//   d = drop (duplicate or useless)
 import fs from 'node:fs';
 import path from 'node:path';
 import { requireVault } from './config.mjs';
@@ -7,6 +8,7 @@ import { atticPath, ensureSkeleton, listRecentMd, parseFrontmatter, projectsFile
 import { isoWeek, weekStart, truncate, dateStr } from './util.mjs';
 import { runJSON, llmOpts, wrapUntrusted, UNTRUSTED_NOTICE } from './llm.mjs';
 import { parseInbox } from './collect.mjs';
+import { savedDir } from './save.mjs';
 
 const BATCH = 40;
 /** Items sent to the LLM per week. Notes the user saved go first, then newest inbox items. */
@@ -19,6 +21,26 @@ export function gatherItems(ctx, week, now = new Date()) {
   const start = weekStart(week);
   const end = new Date(start.getTime() + 7 * 86400000);
   const items = [];
+  // vault notes: last 7 days when this is the current week, else that week's range
+  const isCurrent = week === isoWeek(now);
+  const sinceMs = isCurrent ? now.getTime() - 7 * 86400000 : start.getTime();
+  const untilMs = isCurrent ? Infinity : end.getTime();
+  const readNotes = (dir, source) => {
+    for (const { file } of listRecentMd(dir, { sinceMs, untilMs })) {
+      let text; try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+      const { data, body } = parseFrontmatter(text);
+      const title = data.title || path.basename(file, '.md');
+      items.push({
+        title: String(title), url: data.url ? String(data.url) : '', source,
+        summary: String(data.summary || body.replace(/\s+/g, ' ').trim().slice(0, 300)),
+        tags: Array.isArray(data.tags) ? data.tags : (data.tags ? [String(data.tags)] : []),
+        date: dateStr(new Date(fs.statSync(file).mtimeMs)), file: path.relative(vault, file),
+      });
+    }
+  };
+  // Manual saves first: when the same link also arrived through a feed, the one the user saved is kept.
+  const saved = savedDir(vault);
+  if (saved) readNotes(saved, 'saved');
   const inboxDir = atticPath(vault, 'inbox');
   let names = [];
   try { names = fs.readdirSync(inboxDir).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)); } catch { /* none */ }
@@ -26,23 +48,9 @@ export function gatherItems(ctx, week, now = new Date()) {
     const d = new Date(n.slice(0, 10) + 'T00:00:00');
     if (d >= start && d < end) items.push(...parseInbox(fs.readFileSync(path.join(inboxDir, n), 'utf8'), n.slice(0, 10)));
   }
-  // vault notes: last 7 days when this is the current week, else that week's range
-  const isCurrent = week === isoWeek(now);
-  const sinceMs = isCurrent ? now.getTime() - 7 * 86400000 : start.getTime();
-  const untilMs = isCurrent ? Infinity : end.getTime();
   for (const folder of ctx.config.triage?.include || []) {
     const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
-    for (const { file } of listRecentMd(dir, { sinceMs, untilMs })) {
-      let text; try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
-      const { data, body } = parseFrontmatter(text);
-      const title = data.title || path.basename(file, '.md');
-      items.push({
-        title: String(title), url: data.url ? String(data.url) : '', source: 'vault',
-        summary: String(data.summary || body.replace(/\s+/g, ' ').trim().slice(0, 300)),
-        tags: Array.isArray(data.tags) ? data.tags : (data.tags ? [String(data.tags)] : []),
-        date: dateStr(new Date(fs.statSync(file).mtimeMs)), file: path.relative(vault, file),
-      });
-    }
+    readNotes(dir, 'vault');
   }
   // Duplicates (same URL, or same source+title) are kept but flagged: they become d without an LLM call.
   const seen = new Map();
@@ -62,6 +70,7 @@ function buildPrompt(batch, projects) {
     '- b: 인지가 필요 없다. 시스템이 자동으로 적용하면 된다(예: 도구 업데이트).',
     '- c: 시간을 들여 깊게 읽고, 쓰고, 설명해 볼 것. 이 경우 minutes(예상 소요 분, 정수)를 반드시 적는다.',
     '- d: 버릴 것. 다른 항목과 사실상 같은 내용(중복)이거나, 프로젝트 목록 어디에도 쓸모가 없고 알아 둘 가치도 없는 것(광고·행사 홍보·잡담 등).',
+    '판단 기준: 이번 주에 쓸 데가 있는가, 아래 프로젝트 중 어디에 붙는가. 이번 주에 쓸 데가 있고 프로젝트에 붙으면 c 또는 b 쪽으로, 쓸 데가 없으면 a 또는 d 쪽으로 기운다.',
     `연결 프로젝트(project)는 아래 목록의 줄 하나를 그대로 적거나, 없으면 null.`,
     '프로젝트 목록:', projects.length ? projects.map((p) => `- ${p}`).join('\n') : '(없음)',
     `출력 스키마: {"items":[{"id":"입력의 id","class":"a|b|c|d","project":"목록의 줄 또는 null","reason":"이유 한 줄","minutes":정수(c 일 때만)}]}`,
@@ -116,7 +125,8 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
   const dups = gathered.filter((it) => it.dupOf);
   const all = gathered.filter((it) => !it.dupOf);
   const maxItems = ctx.config.triage?.maxItems ?? MAX_ITEMS;
-  const ranked = [...all].sort((x, y) => (x.source === 'vault' ? 0 : 1) - (y.source === 'vault' ? 0 : 1)
+  const own = (it) => (it.source === 'saved' || it.source === 'vault' ? 0 : 1); // what the user saved goes first
+  const ranked = [...all].sort((x, y) => own(x) - own(y)
     || String(y.published || y.date || '').localeCompare(String(x.published || x.date || '')));
   const items = ranked.slice(0, maxItems);
   const overflow = ranked.slice(maxItems);
@@ -157,7 +167,7 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
 }
 
 export function renderTriage(t) {
-  const L = [`# Triage ${t.week}`, '', `- 항목 ${t.items.length}개: a ${t.counts.a} / b ${t.counts.b} / c ${t.counts.c} / 미분류 ${t.counts.unclassified}`,
+  const L = [`# Triage ${t.week}`, '', `- 항목 ${t.items.length}개: a ${t.counts.a} / b ${t.counts.b} / c ${t.counts.c} / d ${t.counts.d ?? 0} / 미분류 ${t.counts.unclassified}`,
     `- c 예산: ${t.usedMinutes}/${t.weeklyMinutes}분${t.demoted ? `, 예산 초과로 a 로 강등 ${t.demoted}건` : ''}`];
   if (t.overflow) L.push(`- 주간 상한을 넘어 분류하지 않은 항목 ${t.overflow}건 (config.triage.maxItems 로 조정)`);
   if (t.errors.length) L.push(`- 러너 오류 ${t.errors.length}건 (해당 항목은 미분류): ${t.errors[0]}`);

@@ -10,7 +10,7 @@ const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(hom
 const attic = (args, extra = {}) => spawnSync(process.execPath, [path.join(ROOT, 'bin/attic.mjs'), ...args], { env: { ...env, ...extra }, encoding: 'utf8' });
 
 test('every command supports --help (exit 0, non-empty)', () => {
-  for (const c of ['init', 'doctor', 'collect', 'radar', 'triage', 'audit', 'review', 'approve', 'reject', 'pending', 'sync', 'apply', 'retro', 'schedule', 'teach']) {
+  for (const c of ['init', 'doctor', 'collect', 'save', 'radar', 'triage', 'audit', 'review', 'approve', 'reject', 'pending', 'sync', 'apply', 'retro', 'schedule', 'teach']) {
     const r = attic([c, '--help']);
     assert.equal(r.status, 0, c);
     assert.match(r.stdout, /사용법/, c);

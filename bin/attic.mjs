@@ -12,8 +12,9 @@ const HELP = {
   init [--vault <path>] [--yes]       config·볼트 골격·템플릿·스킬 심링크 (멱등)
   doctor [--json]                     연동 상태와 "없으면 꺼지는 기능"
   collect                             출처(rss/atom/github releases) -> _attic/inbox
+  save <URL> [메모] | --note "메모"     링크·메모 수동 저장 -> _attic/saved (triage 가 먼저 봄)
   radar [--json]                      OpenRouter·kie.ai 스냅샷 diff
-  triage [--week YYYY-Www]            이번 주 항목을 a/b/c 로 분류
+  triage [--week YYYY-Www]            이번 주 항목을 a/b/c/d 로 분류
   audit                               스킬/스크립트의 모델·도구 목록화 + 개선 후보
   review [--dry-run] [--fresh] [--json] 승인 시트 + 제안 발송
   approve <id> | reject <id> | pending
@@ -26,15 +27,16 @@ const HELP = {
   init: '사용법: attic init [--vault <path>] [--yes]\n  config($XDG_CONFIG_HOME/brain-attic/config.json)와 볼트 _attic/ 골격을 만들고, 스킬을 ~/.claude/skills, ~/.codex/skills 에 심링크합니다. 있는 것은 덮지 않습니다.',
   doctor: '사용법: attic doctor [--json]\n  git/gh/claude/codex/aws/railway/gws/aside/playwright/Chrome/볼트/obsidian 유무와 용도.',
   collect: '사용법: attic collect\n  config.sources 를 받아 _attic/inbox/YYYY-MM-DD.md 에 추가합니다 (URL 정규화 + 60일 중복 원장).',
+  save: '사용법: attic save <URL> [메모...] [--note "메모"] [--title "제목"]\n  링크나 메모를 _attic/saved/YYYY-MM-DD-<slug>.md 로 저장합니다. 네트워크를 쓰지 않습니다. 이번 주 triage 가 수집 항목보다 먼저 분류합니다.',
   radar: '사용법: attic radar [--json]\n  첫 실행은 기준선 저장, 이후는 신규 모델·가격 ±20%·새 출력 모달리티·kie.ai 새 문서를 보고합니다.',
-  triage: '사용법: attic triage [--week YYYY-Www]\n  a=인지만 b=자동 적용 c=깊게(예상 분 포함). 주간 예산 초과분 c 는 a 로 강등. LLM 실패 시 미분류.',
+  triage: '사용법: attic triage [--week YYYY-Www]\n  a=인지만 b=자동 적용 c=깊게(예상 분 포함) d=버릴 것. 주간 예산 초과분 c 는 a 로 강등. LLM 실패 시 미분류.',
   audit: '사용법: attic audit [--json]\n  config.audit.paths 의 모델 ID/도구를 목록화하고 radar 사건과 대조해 개선 후보를 냅니다 (모델명 단순 치환 제안은 없음).',
   review: '사용법: attic review [--dry-run] [--fresh] [--json]\n  triage + audit + radar -> _attic/reviews/YYYY-Www.md, 제안 저장·발송. 이번 주 분류가 있으면 재사용(--fresh 로 다시 분류). --dry-run 은 시트만.',
   approve: '사용법: attic approve <id>', reject: '사용법: attic reject <id>', pending: '사용법: attic pending [--json]',
   sync: '사용법: attic sync\n  decision-api / github-issues 에서 답을 가져옵니다. 로컬에 있는 제안 id 만 ack 합니다.',
   apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
   retro: '사용법: attic retro [--month YYYY-MM] [--dry-run]\n  기본은 지난달.',
-  schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00.',
+  schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. collect 매일 08:00, radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00.',
   teach: '사용법: attic teach --help',
 };
 
@@ -49,7 +51,7 @@ async function main(argv) {
   if (!(cmd in HELP)) { console.error(`알 수 없는 명령: ${cmd}\n`); console.error(HELP._); return 2; }
   // teach has its own detailed help in src/teach.mjs
   if (cmd !== 'teach' && (rest.includes('--help') || rest.includes('-h'))) { console.log(HELP[cmd]); return 0; }
-  const args = parseArgs(rest, { string: ['vault', 'week', 'month'], bool: ['json', 'yes', 'dry-run', 'fresh'] });
+  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title'], bool: ['json', 'yes', 'dry-run', 'fresh'] });
   const ctx = makeCtx({ vaultOverride: args.vault && cmd !== 'init' ? args.vault : undefined });
 
   switch (cmd) {
@@ -69,6 +71,12 @@ async function main(argv) {
       const { collect } = await import('../src/collect.mjs');
       const r = await collect(ctx);
       console.log(`수집 ${r.added}건 추가, 중복 ${r.duplicates}건 제외, 상한·기간 밖 ${r.skipped || 0}건 건너뜀, 오류 ${r.errors.length}건`);
+      return 0;
+    }
+    case 'save': {
+      const { save, parseSaveArgs } = await import('../src/save.mjs');
+      const r = save(ctx, parseSaveArgs(args._, { note: args.note, title: args.title }));
+      console.log(`저장: ${r.file}`);
       return 0;
     }
     case 'radar': {
@@ -99,7 +107,7 @@ async function main(argv) {
       const { review } = await import('../src/review.mjs');
       const r = await review(ctx, { dryRun: !!args['dry-run'], week: args.week, fresh: !!args.fresh });
       if (args.json) printJson(r);
-      else console.log(`시트: ${r.sheetFile}\n분류: a ${r.counts.a} / b ${r.counts.b} / c ${r.counts.c} / 미분류 ${r.counts.unclassified}\n제안 ${r.proposals.length}건${r.dryRun ? ' (dry-run: 저장·발송 안 함)' : ''}`);
+      else console.log(`시트: ${r.sheetFile}\n분류: a ${r.counts.a} / b ${r.counts.b} / c ${r.counts.c} / d ${r.counts.d ?? 0} / 미분류 ${r.counts.unclassified}\n제안 ${r.proposals.length}건${r.dryRun ? ' (dry-run: 저장·발송 안 함)' : ''}`);
       return 0;
     }
     case 'approve': case 'reject': {

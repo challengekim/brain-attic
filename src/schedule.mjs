@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureDir, homeDir, run, which } from './util.mjs';
 
 export const JOBS = [
+  { name: 'collect', cmd: 'collect', when: { Hour: 8, Minute: 0 }, cron: '0 8 * * *', label: '매일 08:00' },
   { name: 'radar', cmd: 'radar', when: { Hour: 9, Minute: 10 }, cron: '10 9 * * *', label: '매일 09:10' },
   { name: 'review', cmd: 'review', when: { Weekday: 1, Hour: 8, Minute: 30 }, cron: '30 8 * * 1', label: '월요일 08:30' },
   { name: 'retro', cmd: 'retro', when: { Day: 1, Hour: 9, Minute: 0 }, cron: '0 9 1 * *', label: '매월 1일 09:00' },

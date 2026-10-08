@@ -9,6 +9,7 @@ import { audit } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
 import { createProposal, expireStale, listProposals, proposalId } from './proposals.mjs';
 import { dispatch } from './notify/index.mjs';
+import { savedDir } from './save.mjs';
 
 const MAX_TEACH = 8;
 /** b = "the system should apply this". Each one is a question to a human, so cap them per week. */
@@ -18,6 +19,8 @@ export const SHEET_B_MAX = 15;
 
 /** Where a triage item's text may later be read from: a vault note, a web link, or just its title. */
 export function kindOfItem(i) {
+  // An `attic save` note with a link holds only a memo: the page itself is what should be read later.
+  if (i.source === 'saved' && /^https?:\/\//i.test(String(i.url || ''))) return 'url';
   if (i.file) return 'vault';
   return /^https?:\/\//i.test(String(i.url || '')) ? 'url' : 'topic';
 }
@@ -32,16 +35,46 @@ export function triageIsStale(ctx, vault, saved) {
   try {
     for (const n of fs.readdirSync(inbox)) if (/\.md$/.test(n) && fs.statSync(path.join(inbox, n)).mtimeMs > since) return true;
   } catch { /* no inbox */ }
-  for (const folder of ctx.config.triage?.include || []) {
-    const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
+  const manual = savedDir(vault);
+  for (const dir of [...(manual ? [manual] : []), ...(ctx.config.triage?.include || []).map((f) => (path.isAbsolute(f) ? f : path.join(vault, f)))]) {
     if (listRecentMd(dir, { sinceMs: since + 1 }).length) return true;
   }
   return false;
 }
 
+/** Radar event kinds that mean "a model (or a documented model endpoint) is new". */
+export const NEW_MODEL_KINDS = ['new', 'modality', 'kie_new'];
+export const SYSTEM_REVIEW_LIST = 10;
+
+/**
+ * New models this week -> ONE proposal per week: re-review the whole system (skills/scripts in audit.paths),
+ * not only the files a capability match points at. Approval only writes a prompt file a human runs.
+ */
+export function systemReviewDescriptor(events, aud) {
+  const fresh = (events || []).filter((e) => NEW_MODEL_KINDS.includes(e.kind));
+  if (!fresh.length) return null;
+  const ids = [...new Set(fresh.map((e) => e.id))];
+  const names = ids.slice(0, SYSTEM_REVIEW_LIST);
+  const inUse = Object.keys(aud?.models || {}).slice(0, 30);
+  return {
+    kind: 'system',
+    summary: [
+      `새 모델 ${ids.length}종이 나왔다 — 지금 쓰는 시스템 전체를 다시 검토할까요?`,
+      `예: ${names.join(', ')}${ids.length > names.length ? ` 외 ${ids.length - names.length}종` : ''}`,
+      inUse.length ? `지금 스킬·스크립트에서 쓰는 모델 ${Object.keys(aud.models).length}종 (audit.paths 기준)` : 'audit.paths 가 비어 있어 지금 쓰는 모델 목록은 없음 — config 에 스킬·스크립트 폴더를 넣으면 같이 대조합니다',
+    ],
+    payload: {
+      op: 'system_review', newModels: names, modelsInUse: inUse, scannedFiles: aud?.scannedFiles || 0,
+      prompt: '새 모델 목록과 지금 쓰는 모델 목록을 대조해, 작업별(텍스트·코드·이미지·영상·음성)로 지금 방식을 유지할지 바꿀지 표로 정리하세요. 바꾸자는 항목마다 이유(품질·가격·속도)와 시험 방법을 적고, 파일은 고치지 말고 제안만 하세요.',
+    },
+  };
+}
+
 /** used = proposals already created this ISO week per op, so the weekly caps hold across re-runs. */
-export function buildDescriptors(tri, aud, used = {}) {
+export function buildDescriptors(tri, aud, used = {}, events = []) {
   const out = [];
+  const sys = used.system_review ? null : systemReviewDescriptor(events, aud);
+  if (sys) out.push(sys);
   const cs = tri.items.filter((i) => i.class === 'c').slice(0, Math.max(0, MAX_TEACH - (used.queue_teach || 0)));
   for (const c of cs) {
     out.push({
@@ -124,7 +157,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   for (const p of listProposals(vault)) {
     if (p.createdAt && isoWeek(new Date(p.createdAt)) === week && p.payload?.op) used[p.payload.op] = (used[p.payload.op] || 0) + 1;
   }
-  const descriptors = buildDescriptors(tri, aud, used);
+  const descriptors = buildDescriptors(tri, aud, used, events);
   const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString() });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];

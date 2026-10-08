@@ -9,9 +9,22 @@ _이름은 셜록 홈즈의 «두뇌 다락방(brain-attic)» 에서 왔습니�
 
 ```
 collect ──┐
-radar   ──┼─► triage (a/b/c) ─► 승인 시트 ─► 제안 ─► 사람이 승인 ─► apply
-audit   ──┘                                 (pending)  (CLI / Discord / 이슈 / 앱)
+save    ──┤
+radar   ──┼─► triage (a/b/c/d) ─► 승인 시트 ─► 제안 ─► 사람이 승인 ─► apply
+audit   ──┘                                   (pending)  (CLI / Discord / 이슈 / 앱)
 ```
+
+## 구조 — 네 영역
+
+| 영역 | 무엇을 | brain-attic 에서 |
+|---|---|---|
+| **1. 수집** | 자동 수집 — 뉴스·커뮤니티 | `attic collect` 가 RSS/Atom 과 GitHub releases 를 받습니다(`schedule` 로 매일 08:00). RSS 가 있는 블로그·커뮤니티·SNS 는 그대로 출처로 넣으면 됩니다. |
+| | 자동 수집 — 모델 레이더 | `attic radar` 가 OpenRouter 모델 목록과 kie.ai 문서 목차를 매일 비교해 새 모델, 가격 ±20%, 새 출력 모달리티(이미지·음성·영상)를 잡습니다. |
+| | 자동 수집 — 업무·채팅(슬랙·디스코드·메일·Jira·오픈채팅) | **내장 수집기는 없습니다.** 그 도구들을 마크다운 노트로 내보내는 수집기(직접 만든 스크립트·봇)가 볼트 폴더에 쓰게 하고, 그 폴더를 `triage.include` 에 넣으세요. |
+| | 수동 저장 | `attic save <URL> [메모]` 또는 `attic save --note "메모"` 가 `_attic/saved/` 에 노트를 만듭니다. 이미 다른 저장 도구(예: 링크를 정리해 볼트에 넣는 `save` 스킬, 해외 글을 번역·정리해 넣는 스킬, 웹 클리퍼)를 쓰고 있다면 그 폴더를 `triage.include` 에 넣으면 됩니다. 직접 저장한 것은 수집 항목보다 먼저 분류됩니다. |
+| **2. AI 판독 + a/b/c/d** | a 알아만 두기 · b 시스템에 맡기기 · c 내 것으로 만들기 · d 버리기 | `attic triage` 가 «이번 주에 쓸 데가 있나, `_attic/projects.md` 의 어느 일에 붙나» 를 기준으로 가릅니다. c 에는 예상 시간이 붙고 주간 예산을 넘으면 a 로 내려갑니다. 모델이 실패하면 지어내지 않고 `미분류` 로 둡니다. |
+| **3. 승인 + 실제 액션** | 매주 월요일 할 일 카드, 적용/보류, 승인한 것만 반영 | `attic review`(월요일 08:30)가 승인 시트와 제안 카드를 만들고 알림을 보냅니다. 적용은 `attic approve` → `attic apply`, 거절은 `attic reject`, **보류는 그냥 두면 됩니다**(7일 동안 대기하다 만료). 새 모델이 나온 주에는 «지금 시스템 전체를 다시 검토할까요?» 카드가 하나 붙습니다. |
+| **4. 저장·리뷰** | 옵시디언 + git, 주간/월간 리뷰, c 는 매주 teach-back | 모든 산출물은 볼트의 `_attic/` 아래 마크다운이라 Obsidian 에서 열립니다. git 이력은 **볼트를 git 저장소로 두면** 함께 남습니다(attic 은 커밋하지 않습니다 — `attic doctor` 가 볼트 git 여부를 보여 줍니다). `attic retro` 가 매월 1일 지난달을 자체 재검토합니다. 승인한 c 는 설명하기 대기열에 들어가고 `attic teach --next` 로 «내가 설명해 보기» 를 합니다(ISO 24495-1·ASD-STE100 쉬운 글 규칙). |
 
 ## 왜 만들었나
 
@@ -44,12 +57,16 @@ attic init --vault ~/notes     # config + _attic/ 골격 + 템플릿 + 스킬 �
 attic doctor                   # 무엇이 설치돼 있고, 없으면 무엇이 꺼지는지
 attic radar                    # 첫 실행은 기준선 저장, 다음 실행부터 변화 보고
 attic collect                  # RSS/Atom/GitHub releases -> _attic/inbox/YYYY-MM-DD.md
+attic save https://example.com/글 "왜 저장했는지 한 줄"   # 수동 저장 -> _attic/saved/
 attic review --dry-run         # _attic/reviews/YYYY-Www.md 시트만 만들고 아무것도 보내지 않음
 attic review                   # 제안 저장 + 알림 발송
 attic pending && attic approve <id>
 attic apply
-attic schedule install         # radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00
+attic schedule install         # collect 매일 08:00, radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00
+attic teach --next             # 승인한 c 를 하나 골라 내가 설명해 보기 (매주 한 번 권장)
 ```
+
+`triage.include` 는 기본이 비어 있습니다. 볼트에 직접 저장하는 폴더가 있으면 `config.json` 에 넣으세요(예: `"include": ["Clippings", "00_Inbox"]`). 볼트를 git 으로 관리하지 않는다면 `git init` 해 두기를 권합니다.
 
 `_attic/projects.md` 에 지금 하는 일을 한 줄씩 적어 두세요(*일 이름 — 한 문장 — 요즘 막힌 것*). triage 가 항목을 이 줄에 연결합니다.
 출처·triage 폴더·알림은 `config.json` 에서 고칩니다.
@@ -60,16 +77,17 @@ attic schedule install         # radar 매일 09:10, review 월 08:30, retro 매
 |---|---|
 | `attic init [--vault <path>] [--yes]` | config, 볼트 골격, 템플릿을 만들고, `~/.claude`·`~/.codex` 가 있으면 스킬을 심링크합니다. 이미 있는 것은 덮지 않습니다. |
 | `attic doctor [--json]` | git, gh, claude, codex, aws, railway, gws, aside, playwright, Chrome, 볼트, Obsidian 유무와 용도, 없을 때 꺼지는 기능을 보여 줍니다. 실행하는 것은 `--version` 뿐입니다. |
+| `attic save <URL> [메모] [--note "메모"] [--title "제목"]` | 링크나 메모를 `_attic/saved/YYYY-MM-DD-<slug>.md` 노트로 저장합니다. 네트워크를 쓰지 않고(본문을 받아 오지 않음) http(s) 링크만 받습니다. triage 가 이번 주 수집 항목보다 먼저 보고, 같은 링크가 피드로도 들어오면 직접 저장한 쪽을 남깁니다. |
 | `attic collect` | `config.sources` 를 받아 URL 을 정규화(utm 제거, 끝 슬래시)하고 60일 원장(`_attic/state/seen.json`)으로 중복을 거른 뒤 그날 inbox 에 추가합니다. |
 | `attic radar [--json]` | OpenRouter `/api/v1/models` 와 kie.ai 문서 목차(`llms.txt`)를 스냅샷으로 저장하고 비교합니다. 신규 모델, 가격 ±20% 이상 변화, 출력 모달리티(image/audio/video) 신규, kie.ai 에 새로 문서화된 모델/엔드포인트를 보고합니다. 첫 실행은 기준선만 저장합니다. 네트워크 실패는 "건너뜀"이며 이전 스냅샷을 지우지 않습니다. |
-| `attic triage [--week YYYY-Www]` | 이번 주 inbox 와 최근 7일 안에 수정된 노트(`triage.include` 폴더)를 **a**(가볍게 읽고 인지만), **b**(인지 불필요 — 시스템이 자동 적용. 시트에 상위 15건을 보이고, 주당 최대 5건이 `note_auto` 제안이 됩니다. 승인해도 `_attic/approved/<id>.prompt.md` 지시문만 만들어지며 사람이 실행해야 반영됩니다), **c**(시간을 들여 깊게 읽고 쓰고 설명), **d**(버릴 것 — 중복이거나 쓸모없는 것. 같은 링크가 이번 주에 두 번 들어오면 LLM 없이 바로 d. 볼트 노트인 d 는 주당 최대 5건이 «보관함으로 옮길까요?» 제안이 되고, 승인해도 attic 은 볼트 노트를 직접 옮기지 않고 지시문만 만듭니다)로 나눕니다. c 에는 예상 시간(분)이 붙고, `triage.weeklyMinutes`(기본 180)를 넘는 c 는 a 로 강등하며 그 사실을 적습니다. |
+| `attic triage [--week YYYY-Www]` | 이번 주 inbox, `attic save` 로 저장한 것, 최근 7일 안에 수정된 노트(`triage.include` 폴더)를 **a**(가볍게 읽고 인지만), **b**(인지 불필요 — 시스템이 자동 적용. 시트에 상위 15건을 보이고, 주당 최대 5건이 `note_auto` 제안이 됩니다. 승인해도 `_attic/approved/<id>.prompt.md` 지시문만 만들어지며 사람이 실행해야 반영됩니다), **c**(시간을 들여 깊게 읽고 쓰고 설명), **d**(버릴 것 — 중복이거나 쓸모없는 것. 같은 링크가 이번 주에 두 번 들어오면 LLM 없이 바로 d. 볼트 노트인 d 는 주당 최대 5건이 «보관함으로 옮길까요?» 제안이 되고, 승인해도 attic 은 볼트 노트를 직접 옮기지 않고 지시문만 만듭니다)로 나눕니다. c 에는 예상 시간(분)이 붙고, `triage.weeklyMinutes`(기본 180)를 넘는 c 는 a 로 강등하며 그 사실을 적습니다. |
 | `attic audit [--json]` | `audit.paths` 아래 파일에서 모델 ID 와 CLI 도구 언급을 목록화하고, 최근 radar 사건과 대조해 **개선 후보**를 제안합니다. |
-| `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar 결과로 `_attic/reviews/YYYY-Www.md` 시트를 만들고, 제안을 `_attic/proposals/<id>.json`(id = `attic-` + sha256 앞 12자, TTL 7일)으로 저장해 알림을 보냅니다. `--dry-run` 은 시트만 만들고 제안은 저장하지 않습니다. 이번 주 분류가 이미 있으면 재사용하되, 러너 오류가 있었거나 항목이 0건이거나 그 뒤 inbox·포함 폴더가 바뀌었으면 다시 분류합니다. `--fresh` 는 무조건 다시 분류합니다. |
+| `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar 결과로 `_attic/reviews/YYYY-Www.md` 시트를 만들고, 제안을 `_attic/proposals/<id>.json`(id = `attic-` + sha256 앞 12자, TTL 7일)으로 저장해 알림을 보냅니다. `--dry-run` 은 시트만 만들고 제안은 저장하지 않습니다. 이번 주 분류가 이미 있으면 재사용하되, 러너 오류가 있었거나 항목이 0건이거나 그 뒤 inbox·포함 폴더가 바뀌었으면 다시 분류합니다. `--fresh` 는 무조건 다시 분류합니다. 이번 주 레이더에 새 모델이 있으면 «시스템 전체 재검토» 제안(`system_review`, 주 1건)을 더합니다 — 승인하면 대조표를 만드는 지시문만 생깁니다. |
 | `attic approve <id>` / `reject <id>` / `pending` | 터미널에서 결정합니다. |
 | `attic sync` | 양방향 어댑터(decision-api, github-issues)에서 답을 가져옵니다. **로컬에 있는 id 만** ack 합니다. |
 | `attic apply` | 승인된 제안만 처리합니다. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` 는 config/파일을 직접 고치고, 그 밖은 사람이 `claude -p` 로 돌릴 수 있는 지시문 `_attic/approved/<id>.prompt.md` 만 만듭니다. |
-| `attic retro [--month YYYY-MM] [--dry-run]` | 월간 자기평가입니다. 출처별 항목 수, a/b/c 비율, 승인율, teach 노트 수와 평균 점수를 계산하고, 90일간 a/c 가 0 인 출처는 `remove_source`, 승인율 30% 미만 범주는 기준 조정을 **제안**합니다(같은 승인 절차). |
-| `attic schedule install\|uninstall\|status [--dry-run]` | macOS 는 LaunchAgents(`com.brain-attic.<job>.plist`), Linux 는 마커 주석으로 감싼 crontab 블록(멱등)을 씁니다. |
+| `attic retro [--month YYYY-MM] [--dry-run]` | 월간 자기평가입니다. 출처별 항목 수, a/b/c/d 비율, 승인율, teach 노트 수와 평균 점수를 계산하고, 90일간 a/c 가 0 인 출처는 `remove_source`, 승인율 30% 미만 범주는 기준 조정을 **제안**합니다(같은 승인 절차). |
+| `attic schedule install\|uninstall\|status [--dry-run]` | collect 매일 08:00, radar 매일 09:10, review 월요일 08:30, retro 매월 1일 09:00. macOS 는 LaunchAgents(`com.brain-attic.<job>.plist`), Linux 는 마커 주석으로 감싼 crontab 블록(멱등)을 씁니다. |
 | `attic teach ...` | 설명 -> 퀴즈 -> "직접 설명해 보세요" teach-back 세션입니다(`src/teach.mjs`). |
 
 ### `audit` 이 하지 않는 일

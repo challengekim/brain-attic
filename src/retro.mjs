@@ -30,10 +30,12 @@ export function compute({ triages, proposals, teachNotes, sourcesConfigured, mon
   const { start, end } = monthRange(month);
   const inMonth = triages.filter((t) => { const d = new Date(t.generatedAt); return d >= start && d < end; });
   const perSource = {};
-  const tot = { a: 0, b: 0, c: 0, unclassified: 0 };
+  const tot = { a: 0, b: 0, c: 0, d: 0, unclassified: 0 };
   for (const t of inMonth) for (const it of t.items) {
-    const s = (perSource[it.source || 'unknown'] ||= { total: 0, a: 0, b: 0, c: 0, unclassified: 0 });
-    s.total++; s[it.class]++; tot[it.class]++;
+    const s = (perSource[it.source || 'unknown'] ||= { total: 0, a: 0, b: 0, c: 0, d: 0, unclassified: 0 });
+    // An unknown class (older/newer triage files) counts as unclassified so the ratios never turn into NaN.
+    const k = it.class in tot ? it.class : 'unclassified';
+    s.total++; s[k]++; tot[k]++;
   }
   const totalItems = Object.values(tot).reduce((x, y) => x + y, 0);
   const ratios = Object.fromEntries(Object.entries(tot).map(([k, v]) => [k, totalItems ? v / totalItems : 0]));
@@ -90,11 +92,11 @@ export function descriptorsFrom(r) {
 export function renderRetro(r, descriptors, dryRun) {
   const pct = (x) => (x === null ? '-' : `${(x * 100).toFixed(0)}%`);
   const L = [`# 월간 회고 ${r.month}`, '', `- triage 주 수: ${r.triageWeeks}`,
-    `- a/b/c/미분류 비율: a ${pct(r.ratios.a)} / b ${pct(r.ratios.b)} / c ${pct(r.ratios.c)} / 미분류 ${pct(r.ratios.unclassified)}`,
+    `- a/b/c/d/미분류 비율: a ${pct(r.ratios.a)} / b ${pct(r.ratios.b)} / c ${pct(r.ratios.c)} / d ${pct(r.ratios.d)} / 미분류 ${pct(r.ratios.unclassified)}`,
     `- 제안 승인율: ${pct(r.approval.overall)} (결정된 ${r.approval.decided}건)`,
     `- teach 숙달 노트: ${r.teach.count}개, 평균 점수 ${r.teach.avgScore === null ? '-' : r.teach.avgScore.toFixed(1)}`,
-    '', '## 출처별 항목 수', '', '| 출처 | 전체 | a | b | c | 미분류 |', '|---|---|---|---|---|---|'];
-  for (const [n, s] of Object.entries(r.perSource).sort((x, y) => y[1].total - x[1].total)) L.push(`| ${n} | ${s.total} | ${s.a} | ${s.b} | ${s.c} | ${s.unclassified} |`);
+    '', '## 출처별 항목 수', '', '| 출처 | 전체 | a | b | c | d | 미분류 |', '|---|---|---|---|---|---|---|'];
+  for (const [n, s] of Object.entries(r.perSource).sort((x, y) => y[1].total - x[1].total)) L.push(`| ${n} | ${s.total} | ${s.a} | ${s.b} | ${s.c} | ${s.d} | ${s.unclassified} |`);
   L.push('', '## 범주별 승인율', '');
   const kinds = Object.entries(r.approval.byKind);
   if (!kinds.length) L.push('- 결정된 제안 없음');

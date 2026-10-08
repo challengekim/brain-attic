@@ -15,14 +15,18 @@ test('plist: label, absolute node + script + command, calendar, logs', () => {
   assert.match(radar, /\/home\/u\/Library\/Logs\/brain-attic\/radar\.log/);
   const review = renderPlist(JOBS.find((j) => j.name === 'review'), opt);
   assert.match(review, /<key>Weekday<\/key><integer>1<\/integer>\s*<key>Hour<\/key><integer>8<\/integer>\s*<key>Minute<\/key><integer>30<\/integer>/);
+  const collect = renderPlist(JOBS.find((j) => j.name === 'collect'), opt);
+  assert.match(collect, /<string>collect<\/string>/);
+  assert.match(collect, /<key>Hour<\/key><integer>8<\/integer>\s*<key>Minute<\/key><integer>0<\/integer>/);
+  assert.doesNotMatch(collect, /Weekday|<key>Day<\/key>/, 'collect runs every day');
   const retro = renderPlist(JOBS.find((j) => j.name === 'retro'), opt);
   assert.match(retro, /<key>Day<\/key><integer>1<\/integer>\s*<key>Hour<\/key><integer>9<\/integer>\s*<key>Minute<\/key><integer>0<\/integer>/);
 });
 
-test('schedule install --dry-run on darwin prints three plists and writes nothing', async () => {
+test('schedule install --dry-run on darwin prints one plist per job (collect, radar, review, retro) and writes nothing', async () => {
   const ctx = testCtx();
   const r = await schedule(ctx, 'install', { dryRun: true, platform: 'darwin' });
-  assert.deepEqual(r.jobs.map((j) => path.basename(j.file)), ['com.brain-attic.radar.plist', 'com.brain-attic.review.plist', 'com.brain-attic.retro.plist']);
+  assert.deepEqual(r.jobs.map((j) => path.basename(j.file)), ['com.brain-attic.collect.plist', 'com.brain-attic.radar.plist', 'com.brain-attic.review.plist', 'com.brain-attic.retro.plist']);
   assert.ok(r.jobs.every((j) => j.plist.startsWith('<?xml')));
   assert.ok(!fs.existsSync(path.join(ctx.home, 'Library')), 'dry-run must not touch the home');
 });

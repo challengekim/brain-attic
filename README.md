@@ -10,9 +10,22 @@ _The name comes from Sherlock Holmes in A Study in Scarlet: the brain is a small
 
 ```
 collect ──┐
-radar   ──┼─► triage (a/b/c) ─► review sheet ─► proposals ─► YOU approve ─► apply
-audit   ──┘                                       (pending)    (CLI / Discord / issue / app)
+save    ──┤
+radar   ──┼─► triage (a/b/c/d) ─► review sheet ─► proposals ─► YOU approve ─► apply
+audit   ──┘                                         (pending)    (CLI / Discord / issue / app)
 ```
+
+## How it fits together — four areas
+
+| Area | What | In brain-attic |
+|---|---|---|
+| **1. Collect** | Automatic — news and communities | `attic collect` fetches RSS/Atom and GitHub releases (daily 08:00 with `schedule`). Any blog, community or social account that has an RSS feed can be a source. |
+| | Automatic — model radar | `attic radar` diffs the OpenRouter model list and the kie.ai docs index every day: new models, price moves of ±20%, new output modalities (image, audio, video). |
+| | Automatic — work and chat (Slack, Discord, mail, Jira, group chats) | **No built-in collector.** Let your own exporter (a script or a bot) write markdown notes into a vault folder and add that folder to `triage.include`. |
+| | Manual save | `attic save <URL> [memo]` or `attic save --note "memo"` writes a note into `_attic/saved/`. If you already save into the vault with another tool (a `save` skill, a skill that translates and summarizes foreign articles, a web clipper), add its folder to `triage.include`. What you saved yourself is classified before feed items. |
+| **2. AI read + a/b/c/d** | a just be aware · b let the system handle it · c make it yours · d drop | `attic triage` asks "is it useful this week, and which line of `_attic/projects.md` does it attach to?". c gets minutes and is demoted to a over the weekly budget. A failed model run leaves items `unclassified`; nothing is made up. |
+| **3. Approval + real action** | Monday to-do cards, apply or hold, only approved items change anything | `attic review` (Monday 08:30) writes the review sheet and proposal cards and notifies you. Apply = `attic approve` → `attic apply`; decline = `attic reject`; **hold = do nothing** (it waits 7 days, then expires). In a week with new models, one extra card asks "re-review the whole system?". |
+| **4. Store + review** | Obsidian + git, weekly/monthly review, weekly teach-back for c | Everything is markdown under the vault's `_attic/`, so Obsidian opens it. Git history comes **from your vault being a git repository** (attic never commits; `attic doctor` shows whether the vault is under git). `attic retro` reviews the previous month on the 1st. Approved c items go to the teach queue; `attic teach --next` makes you explain one back (ISO 24495-1 and ASD-STE100 plain-language rules). |
 
 ## Why
 
@@ -48,12 +61,17 @@ attic init --vault ~/notes     # config + _attic/ skeleton + templates + skill s
 attic doctor                   # what is installed, what each missing thing disables
 attic radar                    # first run stores a baseline; the next run reports changes
 attic collect                  # RSS/Atom/GitHub-releases -> _attic/inbox/YYYY-MM-DD.md
+attic save https://example.com/post "why I saved it"   # manual save -> _attic/saved/
 attic review --dry-run         # builds _attic/reviews/YYYY-Www.md, sends nothing
 attic review                   # saves proposals and notifies
 attic pending && attic approve <id>
 attic apply
-attic schedule install         # radar daily 09:10, review Mon 08:30, retro 1st 09:00
+attic schedule install         # collect daily 08:00, radar daily 09:10, review Mon 08:30, retro 1st 09:00
+attic teach --next             # pick one approved c item and explain it back (once a week)
 ```
+
+`triage.include` is empty by default. If you save notes into the vault yourself, list those folders in `config.json`
+(for example `"include": ["Clippings", "00_Inbox"]`). If your vault is not a git repository yet, `git init` it.
 
 Edit `_attic/projects.md` (one line per thing you work on: *name — one sentence — what's stuck*). Triage links items to
 those lines. Edit `config.json` (see below) to add sources, folders to triage, and notifiers.
@@ -64,16 +82,17 @@ those lines. Edit `config.json` (see below) to add sources, folders to triage, a
 |---|---|
 | `attic init [--vault <path>] [--yes]` | Create config, vault skeleton, templates; symlink skills into `~/.claude/skills` and `~/.codex/skills` when those tools exist. Never overwrites. |
 | `attic doctor [--json]` | Detect git, gh, claude, codex, aws, railway, gws, aside, playwright, Chrome, vault, Obsidian. Prints what each is for and what is off without it. Only `--version` is ever run. |
+| `attic save <URL> [memo] [--note "memo"] [--title "title"]` | Save a link or a memo as `_attic/saved/YYYY-MM-DD-<slug>.md`. No network (the page is not fetched); http(s) links only. Triage reads these before this week's feed items, and when the same link also arrives from a feed, the saved one is kept. |
 | `attic collect` | Fetch `config.sources`; normalize URLs (utm removed, trailing slash); dedupe through a 60-day ledger `_attic/state/seen.json`; append to the day's inbox. |
 | `attic radar [--json]` | Snapshot OpenRouter `/api/v1/models` and the kie.ai docs index (`llms.txt`); report new models, price moves of 20% or more, new image/audio/video output modalities, newly documented kie.ai models/endpoints. First run = baseline only. Network failure = "skipped", old snapshot kept. |
-| `attic triage [--week YYYY-Www]` | Classify this week's inbox + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it; the sheet lists the top 15 and up to 5 per week become `note_auto` proposals — approving one only writes `_attic/approved/<id>.prompt.md` for a human to run, nothing is applied automatically), **c** (invest time: read deeply, write, explain), **d** (drop: duplicates or useless items; a link seen twice this week becomes d without an LLM call; up to 5 vault notes per week become "archive this note?" proposals, and attic never moves notes itself, it only writes the instruction). c gets minutes; anything over `triage.weeklyMinutes` (default 180) is demoted to a and the sheet says so. |
+| `attic triage [--week YYYY-Www]` | Classify this week's inbox + `attic save` notes + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it; the sheet lists the top 15 and up to 5 per week become `note_auto` proposals — approving one only writes `_attic/approved/<id>.prompt.md` for a human to run, nothing is applied automatically), **c** (invest time: read deeply, write, explain), **d** (drop: duplicates or useless items; a link seen twice this week becomes d without an LLM call; up to 5 vault notes per week become "archive this note?" proposals, and attic never moves notes itself, it only writes the instruction). c gets minutes; anything over `triage.weeklyMinutes` (default 180) is demoted to a and the sheet says so. |
 | `attic audit [--json]` | List model IDs and CLI tools mentioned under `audit.paths`, cross-check recent radar events, suggest **improvement candidates**. |
-| `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar -> `_attic/reviews/YYYY-Www.md`, proposals in `_attic/proposals/<id>.json` (id = `attic-` + sha256 prefix, TTL 7 days), notifications. `--dry-run`: sheet only (no proposals saved). The week's saved triage is reused unless it had runner errors, was empty, or the inbox/included notes changed after it; `--fresh` forces a new classification. |
+| `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar -> `_attic/reviews/YYYY-Www.md`, proposals in `_attic/proposals/<id>.json` (id = `attic-` + sha256 prefix, TTL 7 days), notifications. `--dry-run`: sheet only (no proposals saved). The week's saved triage is reused unless it had runner errors, was empty, or the inbox/included notes changed after it; `--fresh` forces a new classification. When this week's radar has new models, one `system_review` proposal per week asks to re-review the whole system — approving it only writes an instruction file for a comparison table. |
 | `attic approve <id>` / `reject <id>` / `pending` | Decide from the terminal. |
 | `attic sync` | Pull answers from two-way adapters (decision-api, github-issues); acks **only ids that exist locally**. |
 | `attic apply` | Approved proposals only. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` edit config/files directly; anything else only writes `_attic/approved/<id>.prompt.md` for a human to run through `claude -p`. |
-| `attic retro [--month YYYY-MM] [--dry-run]` | Monthly self-assessment: items per source, a/b/c ratios, approval rate, teach notes and average score. Proposes `remove_source` for sources with zero a/c in 90 days and criteria changes for categories under 30% approval — through the same gate. |
-| `attic schedule install\|uninstall\|status [--dry-run]` | macOS: `~/Library/LaunchAgents/com.brain-attic.<job>.plist`. Linux: a marked crontab block (idempotent). |
+| `attic retro [--month YYYY-MM] [--dry-run]` | Monthly self-assessment: items per source, a/b/c/d ratios, approval rate, teach notes and average score. Proposes `remove_source` for sources with zero a/c in 90 days and criteria changes for categories under 30% approval — through the same gate. |
+| `attic schedule install\|uninstall\|status [--dry-run]` | collect daily 08:00, radar daily 09:10, review Monday 08:30, retro on the 1st 09:00. macOS: `~/Library/LaunchAgents/com.brain-attic.<job>.plist`. Linux: a marked crontab block (idempotent). |
 | `attic teach ...` | Teach-back sessions (explain, quiz, "now you explain it"), provided by `src/teach.mjs`. |
 
 ### What `audit` does *not* do
