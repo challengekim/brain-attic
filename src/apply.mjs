@@ -17,6 +17,7 @@ function validSource(s) {
 export function promptFor(p) {
   return [
     `# attic 제안 ${p.id} — 사람이 승인했고, 이 지시문은 아직 실행되지 않았습니다`, '',
+    ...(p.autoApplied ? ['> 7일 동안 답이 없어 추천된 분류 그대로 자동 적용(auto-applied)된 제안입니다. 원치 않으면 실행하지 마세요.', ''] : []),
     '아래 제안을 검토하고 필요한 변경을 **diff 로 먼저 보여준 뒤** 적용하세요. 사용자의 확인 없이 파일을 덮어쓰지 마세요.', '',
     '## 요약', ...p.summary.map((s) => `- ${s}`), '',
     '## 데이터', '```json', JSON.stringify(p.payload, null, 2), '```', '',
@@ -25,7 +26,8 @@ export function promptFor(p) {
   ].join('\n');
 }
 
-export async function apply(ctx, { now = new Date() } = {}) {
+/** onlyAuto: act only on proposals auto-approved after 7 days of silence (what `attic review` runs by itself). */
+export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
   const config = JSON.parse(JSON.stringify(ctx.config));
@@ -33,6 +35,7 @@ export async function apply(ctx, { now = new Date() } = {}) {
   let configDirty = false;
   const awaitingConfig = []; // config ops: marked applied only AFTER the config file was saved
   for (const p of listProposals(vault, { status: 'approved' })) {
+    if (onlyAuto && !p.autoApplied) continue;
     // Only proposals approved within createdAt + TTL may act (an old/expired approval must not).
     if (!isApplicable(p)) { result.skipped.push({ id: p.id, reason: 'TTL 밖이거나 결정 시각이 없는 승인' }); continue; }
     const op = p.payload?.op;
@@ -62,12 +65,12 @@ export async function apply(ctx, { now = new Date() } = {}) {
         if (!q.some((x) => x.proposalId === p.id)) q.push({ proposalId: p.id, title: p.payload.title, url: p.payload.url || '', kind, ...(file ? { file } : {}), project: p.payload.project || null, minutes: p.payload.minutes || null, queuedAt: now.toISOString() });
         writeAtticJson(vault, 'teach/queue.json', q);
         p.status = 'applied'; p.appliedAt = now.toISOString(); saveProposal(vault, p);
-        result.applied.push({ id: p.id, op });
+        result.applied.push({ id: p.id, op, ...(p.autoApplied ? { auto: true } : {}) });
       } else {
         const rel = `approved/${p.id}.prompt.md`;
         if (!fs.existsSync(atticPath(vault, rel))) writeAttic(vault, rel, promptFor(p));
         p.promptFile = rel; saveProposal(vault, p);
-        result.prompts.push({ id: p.id, file: atticPath(vault, rel) });
+        result.prompts.push({ id: p.id, file: atticPath(vault, rel), ...(p.autoApplied ? { auto: true } : {}) });
       }
     } catch (e) { result.errors.push({ id: p.id, error: e.message }); }
   }

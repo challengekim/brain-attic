@@ -78,5 +78,5 @@ test('pending / rejected proposals are never applied', async () => {
   const { proposal } = createProposal(ctx.vault, { kind: 'x', summary: ['r'], payload: { op: 'set_triage_budget', weeklyMinutes: 7 } });
   decide(ctx.vault, proposal.id, 'rejected');
   await apply(ctx);
-  assert.equal(cfgNow(ctx).triage.weeklyMinutes, 180);
+  assert.equal(cfgNow(ctx).triage.weeklyMinutes, undefined); // default: no budget
 });

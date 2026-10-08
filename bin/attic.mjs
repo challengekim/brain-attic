@@ -18,20 +18,22 @@ const HELP = {
   audit                               스킬/스크립트의 모델·도구 목록화 + 개선 후보
   review [--dry-run] [--fresh] [--json] 승인 시트 + 제안 발송
   approve <id> | reject <id> | pending
+  reclassify <id> <a|b|c|d>           분류 제안의 분류를 내가 정한다 (7일 무응답 자동 적용보다 우선)
   sync                                양방향 어댑터에서 답을 가져오고 자기 것만 ack
   apply                               승인된 제안 적용 (화이트리스트 연산만 직접)
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
   schedule install|uninstall|status [--dry-run]
-  teach <주제|파일|URL> [--next|--queue|--due|--review <slug>|--save-session <json>]   설명 → 퀴즈 → 내가 설명하기
+  teach <주제|파일|URL> [--quiz-first] [--next|--queue|--due|--review <slug>|--save-session <json>]   설명 → 퀴즈 → 내가 설명하기
 `,
   init: '사용법: attic init [--vault <path>] [--yes]\n  config($XDG_CONFIG_HOME/brain-attic/config.json)와 볼트 _attic/ 골격을 만들고, 스킬을 ~/.claude/skills, ~/.codex/skills 에 심링크합니다. 있는 것은 덮지 않습니다.',
   doctor: '사용법: attic doctor [--json]\n  git/gh/claude/codex/aws/railway/gws/aside/playwright/Chrome/볼트/obsidian 유무와 용도.',
   collect: '사용법: attic collect\n  config.sources 를 받아 _attic/inbox/YYYY-MM-DD.md 에 추가합니다 (URL 정규화 + 60일 중복 원장).',
   save: '사용법: attic save <URL> [메모...] [--note "메모"] [--title "제목"]\n  링크나 메모를 _attic/saved/YYYY-MM-DD-<slug>.md 로 저장합니다. 네트워크를 쓰지 않습니다. 이번 주 triage 가 수집 항목보다 먼저 분류합니다.',
   radar: '사용법: attic radar [--json]\n  첫 실행은 기준선 저장, 이후는 신규 모델·가격 ±20%·새 출력 모달리티·kie.ai 새 문서를 보고합니다.',
-  triage: '사용법: attic triage [--week YYYY-Www]\n  a=인지만 b=자동 적용 c=깊게(예상 분 포함) d=버릴 것. 주간 예산 초과분 c 는 a 로 강등. LLM 실패 시 미분류.',
+  triage: '사용법: attic triage [--week YYYY-Www]\n  a=인지만 b=자동 적용 c=깊게(예상 분 포함) d=버릴 것. 기본은 상한 없이 전부 분류하고 실제 비율 vs 기대 비율(triage.targetRatios)은 보고서에 보이기만 한다. config 에 maxItems / weeklyMinutes 를 적었으면 그 상한을 지킨다. 여러 프로젝트에서 쓰이거나 자주 링크된 지식은 c 후보. LLM 실패 시 미분류.',
   audit: '사용법: attic audit [--json]\n  config.audit.paths 의 모델 ID/도구를 목록화하고 radar 사건과 대조해 개선 후보를 냅니다 (모델명 단순 치환 제안은 없음).',
   review: '사용법: attic review [--dry-run] [--fresh] [--json]\n  triage + audit + radar -> _attic/reviews/YYYY-Www.md, 제안 저장·발송. 이번 주 분류가 있으면 재사용(--fresh 로 다시 분류). --dry-run 은 시트만.',
+  reclassify: '사용법: attic reclassify <id> <a|b|c|d>\n  대기 중인 분류 제안(c 설명하기 / b 자동 적용 / d 보관)의 분류를 바꿉니다. a 는 «인지만» 이라 제안을 닫습니다. 분류 제안은 7일 동안 답이 없으면 추천 분류 그대로 자동 적용됩니다.',
   approve: '사용법: attic approve <id>', reject: '사용법: attic reject <id>', pending: '사용법: attic pending [--json]',
   sync: '사용법: attic sync\n  decision-api / github-issues 에서 답을 가져옵니다. 로컬에 있는 제안 id 만 ack 합니다.',
   apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
@@ -116,10 +118,18 @@ async function main(argv) {
       if (!id) { console.error(HELP[cmd]); return 2; }
       const want = cmd === 'approve' ? 'approved' : 'rejected';
       const r = decide(requireVault(ctx), id, want, { by: 'cli' });
+      if (r.reason === 'auto-applied') { console.log(`${r.proposal.id}: TTL 이 지났지만 분류 제안이라 추천대로 자동 적용(approved, auto-applied)했습니다 — attic apply 로 반영`); return 0; }
       if (r.reason === 'expired') { console.error(`${id}: 만료돼서 ${want} 하지 않았습니다 (TTL 7일) -> expired`); return 1; }
       if (r.reason === 'not-pending' && !r.ok) { console.error(`${id}: 이미 ${r.proposal.status} 상태라 바꾸지 않았습니다`); return 1; }
       console.log(`${r.proposal.id}: ${r.proposal.status}`);
       return 0;
+    }
+    case 'reclassify': {
+      const { reclassify } = await import('../src/proposals.mjs');
+      const [id, cls] = args._;
+      if (!id || !cls) { console.error(HELP.reclassify); return 2; }
+      try { const p = reclassify(requireVault(ctx), id, String(cls).toLowerCase(), { by: 'cli' }); console.log(`${p.id}: 분류 ${p.userClass}${p.status === 'pending' ? ' (대기 중, 승인하거나 7일 뒤 자동 적용)' : ` (${p.status})`}`); return 0; }
+      catch (e) { console.error(e.message); return 1; }
     }
     case 'pending': {
       const { listProposals, expireStale } = await import('../src/proposals.mjs');

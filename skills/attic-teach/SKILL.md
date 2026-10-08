@@ -1,9 +1,12 @@
 ---
 name: attic-teach
-description: Teach-back tutor. Explains a concept, a saved note, a URL, or a just-finished piece of work in plain language (ISO 24495-1 + ASD-STE100 rules) with a diagram, then quizzes the learner, then makes the LEARNER explain it back and grades the explanation against a rubric, and saves a mastery note with spaced review dates. Use when the user says "teach me", "explain so I understand", "quiz me", "check if I understood", "make me explain it", "/attic-teach", or Korean: "내가 이해하게 설명해줘", "이해했는지 확인", "퀴즈 내줘", "내가 설명해볼게", "설명하게 질문해줘", "체화", "복습할 거 있어?". Not for writing docs for others (that is plain writing) and not for summarizing without a check.
+description: Teach-back tutor. Explains a concept, a saved note, a URL, or a just-finished piece of work in plain language (ISO 24495-1 + ASD-STE100 rules) with a diagram, then quizzes the learner, then makes the LEARNER explain it back and grades the explanation against a rubric, and saves a mastery note with spaced review dates. Use when the user says "teach me", "explain so I understand", "quiz me", "check if I understood", "make me explain it", "/attic-teach", "quiz first", "questions first", or Korean: "내가 이해하게 설명해줘", "이해했는지 확인", "퀴즈 내줘", "내가 설명해볼게", "설명하게 질문해줘", "체화", "복습할 거 있어?", "문제 먼저", "문제부터 내줘", "퀴즈 먼저". Not for writing docs for others (that is plain writing) and not for summarizing without a check.
 ---
 
 # attic-teach: explain → quiz → you explain → grade → review later
+
+Two modes. **Default**: explanation first, then the quiz. **Quiz-first** («문제 먼저», «문제부터 내줘», «퀴즈 먼저», "quiz first"):
+the learner gets the questions first and finds the answers in the source while reading it (open book). See «Quiz-first mode» below.
 
 Reading an explanation feels like understanding. Explaining it yourself shows the gaps.
 This skill runs that loop in the conversation. The CLI `attic teach` runs the same loop in a terminal
@@ -51,6 +54,33 @@ Read `templates/rules/plain-language.md` in the brain-attic repo (installed at
    do not hand-write `_attic/teach/*.md`.
 7. **Close.** One line: score, the weakest point, next review date.
    Suggest `attic teach --review <slug>` or "다시 설명해 볼래요?" for the review day.
+
+## Quiz-first mode («문제 먼저»)
+
+Use this when the user says «문제 먼저», «문제부터 내줘», «퀴즈 먼저», "quiz first", or asks to learn by
+getting the questions before the text. Some learners understand better by hunting for answers in the source
+than by reading it through and then being tested.
+
+1. **Source.** Same as step 1 above. The learner needs the source in front of them: a note path, a URL, or
+   the text itself. Do **not** write the explanation yet.
+2. **Questions first.** Write 3-5 key questions from the source, **one at a time or as a numbered list**.
+   Do not show the answers. Write each question by `templates/rules/plain-language.md` (ISO 24495-1 and
+   ASD-STE100): one question per sentence, short, active voice, condition first, one name for one thing,
+   no hint of the answer in the question. Mix «what happens in this situation?» and «common misconception»
+   with at most one pure recall question.
+3. **Open book.** The learner reads the source and answers. Wait for the answers. Do not give hints unless asked.
+4. **Grade and point to the evidence.** For each answer say right / partly / wrong in one sentence and point to
+   **where in the source** the answer is (section title or the first words of the sentence). Do not copy the
+   whole answer for them if it was partly right; name the missing point and let them add it.
+5. **Teach-back (required).** End with: «이 개념을 모르는 팀원에게 3문장으로 설명해 보세요» / "Explain this
+   to a teammate who does not know it, in 3 sentences." Decide the rubric privately first, then grade 0-4 on
+   accuracy, completeness, own words, example, exactly as in the default mode (same follow-up rule, same 80% bar).
+   Only after that, show a short plain-language explanation (and the diagram) if the learner wants it.
+6. **Score and review dates.** quiz 30% + teach-back 70%, review in 1, 3, 7, 21 days — the same as the default mode.
+7. **Save** with `attic teach --save-session` as in step 6 of the procedure and set `"mode": "quiz-first"` inside `session`.
+   The pack format wants 4 choices per quiz item: for an open question, write four short model answers (one correct)
+   so the note can be reviewed later; `quizCorrect` counts the answers that were right or mostly right.
+   The CLI equivalent is `attic teach --quiz-first <source>`.
 
 ## Review mode
 

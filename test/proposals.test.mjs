@@ -6,6 +6,7 @@ import { testCtx } from './helpers.mjs';
 import { getInstanceId } from '../src/vault.mjs';
 import { createProposal, proposalId, listProposals, expireStale, decide, isApplicable, getProposal, summaryLines, TTL_DAYS } from '../src/proposals.mjs';
 
+const sys = { kind: 'improve', summary: ['개선 후보: X'], payload: { op: 'improve_candidate', file: 'x.md' } }; // changes the system -> expires, never auto-applied
 const base = { kind: 'teach', summary: ['깊게 읽기: X'], payload: { op: 'queue_teach', title: 'X' } };
 
 test('id is attic- + 12 hex of sha256(instanceId + content); idempotent; key order irrelevant', () => {
@@ -43,7 +44,7 @@ test('createProposal: same content -> same file, original createdAt kept; TTL is
 test('expireStale + decide respect TTL; expired duplicate is revived', () => {
   const ctx = testCtx();
   const t0 = new Date('2026-10-01T00:00:00Z');
-  const { proposal } = createProposal(ctx.vault, base, t0);
+  const { proposal } = createProposal(ctx.vault, sys, t0);
   assert.equal(expireStale(ctx.vault, new Date('2026-10-07T23:00:00Z')).length, 0);
   assert.equal(expireStale(ctx.vault, new Date('2026-10-08T00:00:01Z')).length, 1);
   assert.equal(getProposal(ctx.vault, proposal.id).status, 'expired');
@@ -51,7 +52,7 @@ test('expireStale + decide respect TTL; expired duplicate is revived', () => {
   assert.equal(late.changed, false);
   assert.equal(late.reason, 'not-pending');
   assert.equal(getProposal(ctx.vault, proposal.id).status, 'expired');
-  const revived = createProposal(ctx.vault, base, new Date('2026-10-10T00:00:00Z')).proposal;
+  const revived = createProposal(ctx.vault, sys, new Date('2026-10-10T00:00:00Z')).proposal;
   assert.equal(revived.status, 'pending');
   assert.equal(revived.id, proposal.id);
 });
@@ -71,7 +72,7 @@ test('decide: approve/reject once, idempotent, cannot flip', () => {
 
 test('decide refuses a pending proposal past its TTL', () => {
   const ctx = testCtx();
-  const { proposal } = createProposal(ctx.vault, base, new Date('2026-01-01T00:00:00Z'));
+  const { proposal } = createProposal(ctx.vault, sys, new Date('2026-01-01T00:00:00Z'));
   const r = decide(ctx.vault, proposal.id, 'approved');
   assert.equal(r.reason, 'expired');
   assert.equal(r.ok, false);
@@ -81,7 +82,7 @@ test('decide refuses a pending proposal past its TTL', () => {
 test('[6] decide uses createdAt + TTL even when expiresAt on disk was tampered with', () => {
   const ctx = testCtx();
   const t0 = new Date('2026-10-01T00:00:00Z');
-  const { proposal } = createProposal(ctx.vault, base, t0);
+  const { proposal } = createProposal(ctx.vault, sys, t0);
   const f = path.join(ctx.vault, '_attic/proposals', `${proposal.id}.json`);
   const j = JSON.parse(fs.readFileSync(f, 'utf8')); j.expiresAt = '2099-01-01T00:00:00.000Z'; fs.writeFileSync(f, JSON.stringify(j));
   const r = decide(ctx.vault, proposal.id, 'approved', { now: new Date('2026-10-20T00:00:00Z') });

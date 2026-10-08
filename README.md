@@ -24,7 +24,7 @@ audit   ──┘                                         (pending)    (CLI / Di
 | | Automatic — work and chat (Slack, Discord, mail, Jira, group chats) | **No built-in collector.** Let your own exporter (a script or a bot) write markdown notes into a vault folder and add that folder to `triage.include`. |
 | | Manual save | `attic save <URL> [memo]` or `attic save --note "memo"` writes a note into `_attic/saved/`. If you already save into the vault with another tool (a `save` skill, a skill that translates and summarizes foreign articles, a web clipper), add its folder to `triage.include`. What you saved yourself is classified before feed items. |
 | **2. AI read + a/b/c/d** | a just be aware · b let the system handle it · c make it yours · d drop | `attic triage` asks "is it useful this week, and which line of `_attic/projects.md` does it attach to?". c gets minutes and is demoted to a over the weekly budget. A failed model run leaves items `unclassified`; nothing is made up. |
-| **3. Approval + real action** | Monday to-do cards, apply or hold, only approved items change anything | `attic review` (Monday 08:30) writes the review sheet and proposal cards and notifies you. Apply = `attic approve` → `attic apply`; decline = `attic reject`; **hold = do nothing** (it waits 7 days, then expires). In a week with new models, one extra card asks "re-review the whole system?". |
+| **3. Approval + real action** | Monday to-do cards, apply or hold, only approved items change anything | `attic review` (Monday 08:30) writes the review sheet and proposal cards and notifies you. Apply = `attic approve` → `attic apply`; decline = `attic reject`; **hold = do nothing** (it waits 7 days). After 7 days of silence, a **classification suggestion** (a/b/c/d: teach, auto-apply, archive) is applied as recommended and marked `auto-applied`; a proposal that changes the system (add/remove a source, criteria, re-review) just expires. In a week with new models, one extra card asks "re-review the whole system?". |
 | **4. Store + review** | Obsidian + git, weekly/monthly review, weekly teach-back for c | Everything is markdown under the vault's `_attic/`, so Obsidian opens it. Git history comes **from your vault being a git repository** (attic never commits; `attic doctor` shows whether the vault is under git). `attic retro` reviews the previous month on the 1st. Approved c items go to the teach queue; `attic teach --next` makes you explain one back (ISO 24495-1 and ASD-STE100 plain-language rules). |
 
 ## Why
@@ -85,7 +85,7 @@ those lines. Edit `config.json` (see below) to add sources, folders to triage, a
 | `attic save <URL> [memo] [--note "memo"] [--title "title"]` | Save a link or a memo as `_attic/saved/YYYY-MM-DD-<slug>.md`. No network (the page is not fetched); http(s) links only. Triage reads these before this week's feed items, and when the same link also arrives from a feed, the saved one is kept. |
 | `attic collect` | Fetch `config.sources`; normalize URLs (utm removed, trailing slash); dedupe through a 60-day ledger `_attic/state/seen.json`; append to the day's inbox. |
 | `attic radar [--json]` | Snapshot OpenRouter `/api/v1/models` and the kie.ai docs index (`llms.txt`); report new models, price moves of 20% or more, new image/audio/video output modalities, newly documented kie.ai models/endpoints. First run = baseline only. Network failure = "skipped", old snapshot kept. |
-| `attic triage [--week YYYY-Www]` | Classify this week's inbox + `attic save` notes + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it; the sheet lists the top 15 and up to 5 per week become `note_auto` proposals — approving one only writes `_attic/approved/<id>.prompt.md` for a human to run, nothing is applied automatically), **c** (invest time: read deeply, write, explain), **d** (drop: duplicates or useless items; a link seen twice this week becomes d without an LLM call; up to 5 vault notes per week become "archive this note?" proposals, and attic never moves notes itself, it only writes the instruction). c gets minutes; anything over `triage.weeklyMinutes` (default 180) is demoted to a and the sheet says so. |
+| `attic triage [--week YYYY-Www]` | Classify this week's inbox + `attic save` notes + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it; the sheet lists the top 15 and up to 5 per week become `note_auto` proposals — approving one only writes `_attic/approved/<id>.prompt.md` for a human to run, nothing is applied automatically), **c** (invest time: read deeply, write, explain), **d** (drop: duplicates or useless items; a link seen twice this week becomes d without an LLM call; up to 5 vault notes per week become "archive this note?" proposals, and attic never moves notes itself, it only writes the instruction). c gets minutes; by default **every incoming item is classified** (in batches per model call) and the report ends with an **actual vs expected ratio** table (`triage.targetRatios`, default a 30% / b 45% / c 5% / d 20%; shown to the model as an expectation only, never forced). Each note also carries **usage signals** — how many other vault notes link to it with `[[...]]`, and in how many of your projects its title/file name/link appears (repos listed in `triage.projectPaths` or as paths in `_attic/projects.md`, symlinks not followed, capped per project) — and knowledge used in two or more projects or linked often is a candidate for c. If you set `triage.maxItems` or `triage.weeklyMinutes` yourself, those caps still apply. |
 | `attic audit [--json]` | List model IDs and CLI tools mentioned under `audit.paths`, cross-check recent radar events, suggest **improvement candidates**. |
 | `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar -> `_attic/reviews/YYYY-Www.md`, proposals in `_attic/proposals/<id>.json` (id = `attic-` + sha256 prefix, TTL 7 days), notifications. `--dry-run`: sheet only (no proposals saved). The week's saved triage is reused unless it had runner errors, was empty, or the inbox/included notes changed after it; `--fresh` forces a new classification. When this week's radar has new models, one `system_review` proposal per week asks to re-review the whole system — approving it only writes an instruction file for a comparison table. |
 | `attic approve <id>` / `reject <id>` / `pending` | Decide from the terminal. |
@@ -119,7 +119,7 @@ It proposes things like: *"skill X generates images with Y; Z just appeared and 
                                               └► anything else → approved/<id>.prompt.md (you run it)
 ```
 
-Same content gives the same id, so re-sending is idempotent; different content gives a different id. Ids also mix in a random per-install value, so two vaults never collide. A proposal older than 7 days cannot be approved; if the same content comes back after expiry it is sent as a new generation (`-g2`) so an old answer cannot approve it.
+Same content gives the same id, so re-sending is idempotent; different content gives a different id. Ids also mix in a random per-install value, so two vaults never collide. A proposal older than 7 days cannot be approved the normal way: a classification suggestion (teach / auto-apply / archive) is then applied as recommended (`auto-applied`, shown on the next sheet; your own answer or `attic reclassify <id> <a|b|c|d>` always wins), anything that changes the system expires; if the same content comes back after expiry it is sent as a new generation (`-g2`) so an old answer cannot approve it.
 
 ## Teach (explain it back)
 
@@ -133,6 +133,7 @@ attic teach --queue                         # c items you approved in the weekly
 attic teach --next                          # start with the first queued item
 attic teach --due                           # reviews due today
 attic teach --review <slug>                 # review
+attic teach --quiz-first <source>             # quiz first: questions before the explanation, find the answers in the source (open book)
 attic teach --save-session session.json     # store a result made in conversation by the attic-teach skill
 ```
 
@@ -141,7 +142,7 @@ attic teach --save-session session.json     # store a result made in conversatio
 3. **You explain it back** ("explain it to a teammate in 3 sentences", "what breaks without it"). Graded 0-4 on accuracy, completeness, own words, example. Under 80% you get one follow-up question that points at the gap. It never writes the answer for you.
 4. Score (quiz 30% + teach-back 70%) goes to `_attic/teach/<slug>.md`, with reviews after 1, 3, 7, 21 days.
 
-In Claude Code or Codex, the `attic-teach` skill runs the same loop as a conversation (`attic init` links it).
+In Claude Code or Codex, the `attic-teach` skill runs the same loop as a conversation (`attic init` links it). Say «quiz first» ("문제 먼저") for **quiz-first mode**: you get 3-5 key questions before the text, find the answers in the source (open book), get graded with the place in the text, then explain the idea to a teammate in 3 sentences, graded by the same rubric, with the same 1/3/7/21-day reviews.
 
 ## Config
 
@@ -154,13 +155,15 @@ In Claude Code or Codex, the `attic-teach` skill runs the same loop as a convers
 | `sources[]` | `{type:"rss", name, url}` or `{type:"github", name, repo:"owner/name"}` (-> `releases.atom`). |
 | `llm` | `{runner:"claude"\|"codex"\|"none", model, timeoutMs, allowCodexWithUntrusted}`. Defaults: claude -> `haiku`, codex -> `gpt-6-luna`. `codex` is refused for calls that carry external text unless `allowCodexWithUntrusted` is `true` (see Security boundary). |
 | `triage.include[]` | **Folders** (relative to the vault), not globs. Notes modified in the last 7 days are read (`title`, `url`, `summary`, `tags` from frontmatter). Empty by default; `_attic/saved/` (written by `attic save`) is always read without being listed. |
-| `triage.weeklyMinutes` | Time budget for c items (default 180). |
+| `triage.weeklyMinutes` | Optional time budget for c items. Unset by default (no budget); if set, c over the budget is demoted to a. |
+| `triage.targetRatios` | Expected share of a/b/c/d (default 0.30/0.45/0.05/0.20, must sum to 1). Shown to the model and in the report as « actual vs expected »; never forced. |
+| `triage.projectPaths` | Project repos (array of paths, or `{name: path}`) scanned for usage signals. Paths written in `_attic/projects.md` lines also count. Up to 20 projects, 200 text files / 2 MB per project; symlinks are not followed. |
 | `audit.paths[]` | Directories to scan for `.md .sh .mjs .py .toml .json`. |
 | `radar` | `priceThreshold` (0.2), `openrouterUrl`, `kieLlmsUrl`. |
 | `notifiers[]` | See below. |
 | `envFiles[]` | Files with `KEY=VALUE` lines (for example a chmod 600 file that already holds a webhook or token). Loaded into the environment, also for scheduled runs. Existing env vars win. Values never go into config.json. |
 | `collect` | `{maxPerSource: 20, firstRunDays: 7}`: the first run takes the last 7 days only, later runs at most 20 items per source. |
-| `triage.maxItems` | Max items classified by the LLM per week (default 120). Notes you saved come first; the rest is marked as over the limit. |
+| `triage.maxItems` | Optional cap on items classified per week. Unset by default (everything is classified); if set, notes you saved come first and the rest is marked as over the limit. |
 | `teach.model` | Model for teach (default claude `sonnet` / codex `gpt-6.1-sol`). |
 
 ### Notifiers

@@ -4,10 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atticPath, ensureSkeleton, listRecentMd, writeAttic } from './vault.mjs';
 import { isoWeek, readJson } from './util.mjs';
-import { triage } from './triage.mjs';
+import { triage, renderRatioTable } from './triage.mjs';
 import { audit } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
 import { createProposal, expireStale, listProposals, proposalId } from './proposals.mjs';
+import { apply } from './apply.mjs';
 import { dispatch } from './notify/index.mjs';
 import { savedDir } from './save.mjs';
 
@@ -110,13 +111,14 @@ export function buildDescriptors(tri, aud, used = {}, events = []) {
   return out;
 }
 
-export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso }) {
+export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [] }) {
   const L = [`# 승인 시트 ${week}`, '', `생성: ${nowIso}${dryRun ? ' (dry-run: 제안 저장·발송 안 함)' : ''}`, ''];
   L.push('## 1. 이번 주 레이더', '');
   if (!events.length) L.push('- 변화 없음 (또는 아직 기준선만 저장됨)');
   for (const e of events.slice(0, 40)) L.push(`- [${e.source}] \`${e.id}\` — ${e.detail}`);
   L.push('', '## 2. 분류 결과', '',
-    `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / d ${tri.counts.d ?? 0} / 미분류 ${tri.counts.unclassified} — c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}`);
+    `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / d ${tri.counts.d ?? 0} / 미분류 ${tri.counts.unclassified} — ${tri.weeklyMinutes != null ? `c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}` : `c 예상 시간 합계 ${tri.usedMinutes}분 (예산 상한 없음)`}`);
+  L.push(...renderRatioTable(tri.ratios));
   if (tri.errors.length) L.push(`- 러너 오류: ${tri.errors[0]} -> 해당 항목은 미분류로 남겼습니다 (지어내지 않음)`);
   for (const k of ['c', 'b', 'a']) {
     const rows = tri.items.filter((i) => i.class === k).slice(0, k === 'c' ? 30 : 15);
@@ -135,7 +137,12 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
   if (!descriptors.length) L.push('- 없음');
   for (const d of descriptors) {
     const id = proposalId(vault, d);
-    L.push(`- \`${id}\` (${d.kind}) ${d.summary[0]}`, `  - 승인: \`attic approve ${id}\` · 거절: \`attic reject ${id}\``);
+    const cls = { queue_teach: 'c', note_auto: 'b', archive_note: 'd' }[d.payload?.op];
+    L.push(`- \`${id}\` (${d.kind}) ${d.summary[0]}`, `  - 승인: \`attic approve ${id}\` · 거절: \`attic reject ${id}\`${cls ? ` · 분류 바꾸기: \`attic reclassify ${id} <a|b|c|d>\` · 답이 없으면 7일 뒤 추천(${cls}) 그대로 자동 적용` : ' · 답이 없으면 7일 뒤 만료'}`);
+  }
+  if (autoApplied.length) {
+    L.push('', '## 5. 7일 무응답으로 추천 분류가 자동 적용된 제안 (auto-applied)', '');
+    for (const p of autoApplied) L.push(`- \`${p.id}\` ${p.summary[0]}`);
   }
   return L.join('\n') + '\n';
 }
@@ -144,7 +151,9 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
   week = week || isoWeek(now);
-  const expired = expireStale(vault, now);
+  const changed = expireStale(vault, now);
+  const expired = changed.filter((p) => p.status === 'expired');
+  const autoApproved = changed.filter((p) => p.status === 'approved');
   // Reuse this week's triage if it exists: the sheet must show what was classified, and a re-run
   // costs LLM calls and can come out slightly different. --fresh forces a new classification; a saved result with
   // runner errors, no items, or older than the current inbox/included notes is not reused.
@@ -158,7 +167,10 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     if (p.createdAt && isoWeek(new Date(p.createdAt)) === week && p.payload?.op) used[p.payload.op] = (used[p.payload.op] || 0) + 1;
   }
   const descriptors = buildDescriptors(tri, aud, used, events);
-  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString() });
+  // Classification suggestions nobody answered for 7 days are applied as recommended (not on --dry-run).
+  const auto = dryRun ? { applied: [], prompts: [], errors: [] } : await apply(ctx, { now, onlyAuto: true });
+  const autoApplied = autoApproved; // newly auto-approved in this run (apply() ran for them right above)
+  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
   if (!dryRun) {
@@ -173,5 +185,5 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
       notified = await dispatch(ctx, msg, pending);
     }
   }
-  return { week, sheetFile, dryRun, expired: expired.length, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
+  return { week, sheetFile, dryRun, expired: expired.length, autoApplied: autoApplied.map((p) => p.id), counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
 }

@@ -243,7 +243,7 @@ test('[6] apply skips approvals whose decidedAt is later than createdAt + TTL', 
   const r = await apply(ctx);
   assert.equal(r.applied.length, 0);
   assert.equal(r.skipped.length, 1);
-  assert.equal(loadConfig(ctx.env, ctx.configPath).triage.weeklyMinutes, 180);
+  assert.equal(loadConfig(ctx.env, ctx.configPath).triage.weeklyMinutes, undefined); // default: no budget
 });
 
 // ---------------------------------------------------------------- 6. CLI uses decide()
