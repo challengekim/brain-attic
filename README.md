@@ -61,7 +61,7 @@ attic init --vault ~/notes     # config + _attic/ skeleton + templates + skill s
 attic doctor                   # what is installed, what each missing thing disables
 attic radar                    # first run stores a baseline; the next run reports changes
 attic collect                  # RSS/Atom/GitHub-releases -> _attic/inbox/YYYY-MM-DD.md
-attic save https://example.com/post "why I saved it"   # manual save -> _attic/saved/
+attic save "https://example.com/post" "why I saved it"   # manual save -> _attic/saved/ (quote the URL)
 attic review --dry-run         # builds _attic/reviews/YYYY-Www.md, sends nothing
 attic review                   # saves proposals and notifies
 attic pending && attic approve <id>

@@ -57,7 +57,7 @@ attic init --vault ~/notes     # config + _attic/ 골격 + 템플릿 + 스킬 �
 attic doctor                   # 무엇이 설치돼 있고, 없으면 무엇이 꺼지는지
 attic radar                    # 첫 실행은 기준선 저장, 다음 실행부터 변화 보고
 attic collect                  # RSS/Atom/GitHub releases -> _attic/inbox/YYYY-MM-DD.md
-attic save https://example.com/글 "왜 저장했는지 한 줄"   # 수동 저장 -> _attic/saved/
+attic save "https://example.com/글" "왜 저장했는지 한 줄"   # 수동 저장 -> _attic/saved/ (URL 은 따옴표로)
 attic review --dry-run         # _attic/reviews/YYYY-Www.md 시트만 만들고 아무것도 보내지 않음
 attic review                   # 제안 저장 + 알림 발송
 attic pending && attic approve <id>
