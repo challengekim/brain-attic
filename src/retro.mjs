@@ -44,7 +44,8 @@ export function compute({ triages, proposals, teachNotes, sourcesConfigured, mon
   const byKind = {};
   for (const p of proposals) {
     const d = new Date(p.createdAt);
-    if (d < start || d >= end || p.status === 'pending') continue;
+    // withdrawn = the system took it back; nobody decided it, so it is not a rejection either
+    if (d < start || d >= end || p.status === 'pending' || p.status === 'withdrawn') continue;
     const k = (byKind[p.kind] ||= { decided: 0, approved: 0 });
     k.decided++;
     if (p.status === 'approved' || p.status === 'applied') k.approved++;

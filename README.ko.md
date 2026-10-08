@@ -84,6 +84,7 @@ attic teach --next             # 승인한 c 를 하나 골라 내가 설명해 
 | `attic audit [--json]` | `audit.paths` 아래 파일에서 모델 ID 와 CLI 도구 언급을 목록화하고, 최근 radar 사건과 대조해 **개선 후보**를 제안합니다. |
 | `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar 결과로 `_attic/reviews/YYYY-Www.md` 시트를 만들고, 제안을 `_attic/proposals/<id>.json`(id = `attic-` + sha256 앞 12자, TTL 7일)으로 저장해 알림을 보냅니다. `--dry-run` 은 시트만 만들고 제안은 저장하지 않습니다. 이번 주 분류가 이미 있으면 재사용하되, 러너 오류가 있었거나 항목이 0건이거나 그 뒤 inbox·포함 폴더가 바뀌었으면 다시 분류합니다. `--fresh` 는 무조건 다시 분류합니다. 이번 주 레이더에 새 모델이 있으면 «시스템 전체 재검토» 제안(`system_review`, 주 1건)을 더합니다 — 승인하면 대조표를 만드는 지시문만 생깁니다. |
 | `attic approve <id>` / `reject <id>` / `pending` | 터미널에서 결정합니다. |
+| `attic withdraw <id...> [--reason <글>]` | 대기 중인 제안을 **철회**합니다(`withdrawn`). 적용되지 않고, 7일이 지나도 자동 적용되지 않으며, 회고 승인율에도 들어가지 않습니다. 같은 주에 `attic review` 를 다시 돌리면, 새 분류와 안 맞는 앞 실행의 분류 제안과 문구만 바뀐 중복은 review 가 알아서 철회합니다. |
 | `attic sync` | 양방향 어댑터(decision-api, github-issues)에서 답을 가져옵니다. **로컬에 있는 id 만** ack 합니다. |
 | `attic apply` | 승인된 제안만 처리합니다. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` 는 config/파일을 직접 고치고, 그 밖은 사람이 `claude -p` 로 돌릴 수 있는 지시문 `_attic/approved/<id>.prompt.md` 만 만듭니다. |
 | `attic retro [--month YYYY-MM] [--dry-run]` | 월간 자기평가입니다. 출처별 항목 수, a/b/c/d 비율, 승인율, teach 노트 수와 평균 점수를 계산하고, 90일간 a/c 가 0 인 출처는 `remove_source`, 승인율 30% 미만 범주는 기준 조정을 **제안**합니다(같은 승인 절차). |
