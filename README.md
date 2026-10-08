@@ -91,9 +91,11 @@ those lines. Edit `config.json` (see below) to add sources, folders to triage, a
 | `attic approve <id>` / `reject <id>` / `pending` | Decide from the terminal. |
 | `attic withdraw <id...> [--reason <text>]` | **Withdraw** pending proposals (`withdrawn`): never applied, never auto-applied after 7 days, not counted in the retro approval rate. Re-running `attic review` in the same week withdraws the earlier run's classification proposals that the new classification disagrees with, and older duplicates that only differ in wording. |
 | `attic sync` | Pull answers from two-way adapters (decision-api, github-issues); acks **only ids that exist locally**. |
-| `attic apply` | Approved proposals only. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` edit config/files directly; anything else only writes `_attic/approved/<id>.prompt.md` for a human to run through `claude -p`. |
+| `attic apply` | Approved proposals only. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` edit config/files directly; `try_in_project` writes an instruction file and, when `config.todo` is set, creates **one** task (see «Try it in a project»); anything else only writes `_attic/approved/<id>.prompt.md` for a human to run through `claude -p`. |
+| `attic tick` | `sync` then `apply` once, no expiry. Scheduled every hour at :20, so an answer given in the app takes effect within the hour. |
+| `attic todo [status]` / `attic todo resolve <id> --delivered\|--retry` | Task deliveries whose result is unknown (timeout, unexpected exit, a crash mid-way). Look for `attic:<id>` in your to-do app, then close it (`--delivered`) or let the next apply create it (`--retry`). |
 | `attic retro [--month YYYY-MM] [--dry-run]` | Monthly self-assessment: items per source, a/b/c/d ratios, approval rate, teach notes and average score. Proposes `remove_source` for sources with zero a/c in 90 days and criteria changes for categories under 30% approval — through the same gate. |
-| `attic schedule install\|uninstall\|status [--dry-run]` | collect daily 08:00, radar daily 09:10, review Monday 08:30, retro on the 1st 09:00. macOS: `~/Library/LaunchAgents/com.brain-attic.<job>.plist`. Linux: a marked crontab block (idempotent). |
+| `attic schedule install\|uninstall\|status [--dry-run]` | collect daily 08:00, radar daily 09:10, review Monday 08:30, retro on the 1st 09:00, tick every hour at :20. macOS: `~/Library/LaunchAgents/com.brain-attic.<job>.plist`. Linux: a marked crontab block (idempotent). |
 | `attic teach ...` | Teach-back sessions (explain, quiz, "now you explain it"), provided by `src/teach.mjs`. |
 
 ### What `audit` does *not* do
@@ -121,6 +123,20 @@ It proposes things like: *"skill X generates images with Y; Z just appeared and 
 ```
 
 Same content gives the same id, so re-sending is idempotent; different content gives a different id. Ids also mix in a random per-install value, so two vaults never collide. A proposal older than 7 days cannot be approved the normal way: a classification suggestion (teach / auto-apply / archive) is then applied as recommended (`auto-applied`, shown on the next sheet; your own answer or `attic reclassify <id> <a|b|c|d>` always wins), anything that changes the system expires; if the same content comes back after expiry it is sent as a new generation (`-g2`) so an old answer cannot approve it.
+
+## Try it in a project (c → «try» → a task)
+
+c has two kinds. **learn** is a concept to read deeply and explain back (the teach queue). **try** is a tool or a method to test
+small in one of your projects: the model must name the project (from `_attic/projects.md`, by its name), a **next step** (what,
+where, how small) and a **check** (what to measure to call it worked or not). If any of the three is missing the item stays
+learn — nothing is filled in. When a note introduces several tools, the first one to try is the next step and the competitors
+and the ones not worth taking in go into the reason.
+
+The sheet starts with «이번 주 해 볼 것» (try items, ranked) and «들이지 않기로 한 것» (notes you saved with a judgement that
+ended up a/d, with the reason). Each try item becomes a `try_in_project` card (up to 5 a week). It is **not** auto-applied:
+silence expires it. Approving it (terminal, app, issue) writes `_attic/approved/<id>.prompt.md` — try small, measure before
+and after, write the result back to the vault, undo if it did not work — and, with `config.todo`, creates one task in your
+to-do app. A lock per proposal and the exit-code contract above make sure one approval gives at most one task.
 
 ## Teach (explain it back)
 
@@ -155,7 +171,9 @@ In Claude Code or Codex, the `attic-teach` skill runs the same loop as a convers
 | `projectsFile` | Defaults to `<vault>/_attic/projects.md`. |
 | `sources[]` | `{type:"rss", name, url}` or `{type:"github", name, repo:"owner/name"}` (-> `releases.atom`). |
 | `llm` | `{runner:"claude"\|"codex"\|"none", model, timeoutMs, allowCodexWithUntrusted}`. Defaults: claude -> `haiku`, codex -> `gpt-6-luna`. `codex` is refused for calls that carry external text unless `allowCodexWithUntrusted` is `true` (see Security boundary). |
-| `triage.include[]` | **Folders** (relative to the vault), not globs. Notes modified in the last 7 days are read (`title`, `url`, `summary`, `tags` from frontmatter). Empty by default; `_attic/saved/` (written by `attic save`) is always read without being listed. |
+| `triage.include[]` | **Folders** (relative to the vault), not globs. Notes modified in the last 7 days are read (`title`, `url` or a `source:` URL, `summary` or `description`, `tags` from frontmatter; `my_relevance` and `applicable_when` — your own judgement written when saving — go to the model as `relevance` and weigh most). Empty by default; `_attic/saved/` (written by `attic save`) is always read without being listed. |
+| `triage.exclude[]` | Vault-relative folder prefixes never read (auto-generated logs, digests). Changing it, or `_attic/projects.md`, makes this week's saved triage stale. |
+| `todo` | Optional task hook for approved «try» proposals: `{argv:[cmd, ...args], dueDays:3, timeoutMs:30000}`. Run without a shell; `{title} {body} {due} {tags} {project} {id} {url}` are replaced inside single arguments, and a filled value starting with `-` gets a leading `·`. Exit 0 = created, 75 = definitely not created (retried), anything else = unknown (never retried by itself; see `attic todo`). |
 | `triage.weeklyMinutes` | Optional time budget for c items. Unset by default (no budget); if set, c over the budget is demoted to a. |
 | `triage.targetRatios` | Expected share of a/b/c/d (default 0.30/0.45/0.05/0.20, must sum to 1). Shown to the model and in the report as « actual vs expected »; never forced. |
 | `triage.projectPaths` | Project repos (array of paths, or `{name: path}`) scanned for usage signals. Paths written in `_attic/projects.md` lines also count. Up to 20 projects, 200 text files / 2 MB per project; symlinks are not followed. |

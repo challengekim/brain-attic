@@ -26,6 +26,13 @@ const file = (vault, id) => atticPath(vault, rel(id));
  */
 export const AUTO_OPS = ['queue_teach', 'note_auto', 'archive_note'];
 export const isAutoApplicable = (p) => AUTO_OPS.includes(p?.payload?.op);
+/**
+ * Proposals about one triaged item (a note or a link): the classification ones plus try_in_project ("try this in a
+ * project", c with a concrete next step). try_in_project is NOT auto-applicable: it ends in an outside task, so silence
+ * expires it instead of acting on it.
+ */
+export const ITEM_OPS = [...AUTO_OPS, 'try_in_project'];
+export const isItemProposal = (p) => ITEM_OPS.includes(p?.payload?.op);
 const deadline = (p) => new Date(p.createdAt).getTime() + TTL_DAYS * 86400000;
 
 /** Same content -> same id (idempotent). An expired or withdrawn duplicate is revived as pending. */
@@ -96,7 +103,16 @@ export function withdraw(vault, id, { by = 'cli', reason = '', now = new Date() 
 
 /** Which note/link a classification proposal is about (file, else url, else title). */
 export function itemKey(x) { return x?.file || x?.url || x?.title || ''; }
-export const OP_CLASS = { queue_teach: 'c', note_auto: 'b', archive_note: 'd' };
+export const OP_CLASS = { queue_teach: 'c', note_auto: 'b', archive_note: 'd', try_in_project: 'c' };
+
+/** The op a triaged item should be proposed as (null = no card for it). c splits into try and learn. */
+export function desiredOp(it) {
+  if (!it) return null;
+  if (it.class === 'c') return it.action === 'try' ? 'try_in_project' : 'queue_teach';
+  if (it.class === 'b') return 'note_auto';
+  if (it.class === 'd' && it.file) return 'archive_note';
+  return null;
+}
 
 /**
  * The user changes the class of a pending classification proposal (their instruction beats the recommendation).

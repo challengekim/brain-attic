@@ -42,7 +42,7 @@ test('triage with a working runner: classes, project link only from the list, c 
   assert.deepEqual(t.items.map((i) => i.class).slice(0, 3), ['a', 'b', 'c']);
   assert.equal(t.items.find((i) => i.class === 'a').project, null);          // "not in list" -> null
   const c = t.items.find((i) => i.class === 'c');
-  assert.equal(c.project, '뉴스레터 — 주간 소식 — 고르기');
+  assert.equal(c.project, '뉴스레터', 'stored as the project name (first part of the line)');
   assert.equal(c.minutes, 40);
   assert.ok(fs.existsSync(atticPath(ctx.vault, 'triage', '2026-W41.json')));
 });

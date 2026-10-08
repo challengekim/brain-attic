@@ -7,6 +7,7 @@ import { atticPath, ensureSkeleton, writeAttic, writeAtticJson } from './vault.m
 import { isApplicable, listProposals, saveProposal } from './proposals.mjs';
 import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
+import { applyTry } from './todo.mjs';
 
 export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach'];
 
@@ -66,6 +67,13 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
         writeAtticJson(vault, 'teach/queue.json', q);
         p.status = 'applied'; p.appliedAt = now.toISOString(); saveProposal(vault, p);
         result.applied.push({ id: p.id, op, ...(p.autoApplied ? { auto: true } : {}) });
+      } else if (op === 'try_in_project') {
+        // Own path: instruction file + (with config.todo) one outside task, under a per-proposal lock (see todo.mjs).
+        const r = await applyTry(ctx, vault, p.id, now);
+        if (r.applied) result.applied.push({ id: p.id, op, todo: true });
+        else if (r.prompt) result.prompts.push({ id: p.id, file: r.prompt });
+        else if (r.skipped) result.skipped.push({ id: p.id, reason: r.skipped });
+        else result.errors.push({ id: p.id, error: r.error, ...(r.uncertain ? { uncertain: true } : {}) });
       } else {
         const rel = `approved/${p.id}.prompt.md`;
         if (!fs.existsSync(atticPath(vault, rel))) writeAttic(vault, rel, promptFor(p));
