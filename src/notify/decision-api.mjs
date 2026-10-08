@@ -82,6 +82,10 @@ export async function pull(ctx, cfg) {
       try {
         const q = reclassify(ctx.vault, p.id, cls, { by: 'decision-api', now: at });
         if (q.status === 'pending') decide(ctx.vault, p.id, 'approved', { by: 'decision-api', now: at });
+        // reclassify() drops remote references (new generation). The answer is already final here, so keep our send
+        // record: if the PATCH below fails, the next pull still recognises this changeId as ours and retries the ack.
+        const done = getProposal(ctx.vault, p.id);
+        if (!done.external?.['decision-api']) { done.external = { ...done.external, 'decision-api': { ...sent, reclassifiedTo: cls } }; saveProposal(ctx.vault, done); }
         changed.push(p.id);
       } catch (e) {
         // Not applicable (unknown class, d without a file, not a classification proposal, TTL passed): leave the

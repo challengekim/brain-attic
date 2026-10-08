@@ -208,3 +208,22 @@ test('pull: a pick made inside the TTL but pulled after it still applies the pic
   assert.equal(q.status, 'approved');
   assert.equal(q.payload.op, 'note_auto');
 });
+
+test('pull: after a reclassify, a failed ack is retried on the next pull (the changeId stays ours)', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const p = sent(ctx, createProposal(ctx.vault, cls('queue_teach')).proposal);
+  const answers = { answers: [{ changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'b', answeredAt: new Date().toISOString() }] };
+  const failing = await startServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET') return res.end(JSON.stringify(answers));
+    res.statusCode = 500; res.end('{}');
+  });
+  await assert.rejects(api.pull(ctx, cfgFor(failing)));
+  await failing.close();
+  assert.equal(getProposal(ctx.vault, p.id).payload.op, 'note_auto');
+  const s = await mock(() => answers);
+  const r = await api.pull(ctx, cfgFor(s));
+  await s.close();
+  assert.deepEqual(r.acked, [p.id]);
+  assert.equal(getProposal(ctx.vault, p.id).status, 'approved');
+});
