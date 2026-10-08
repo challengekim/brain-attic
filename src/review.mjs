@@ -7,8 +7,9 @@ import { isoWeek, readJson } from './util.mjs';
 import { triage, renderRatioTable } from './triage.mjs';
 import { audit } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
-import { createProposal, expireStale, listProposals, proposalId } from './proposals.mjs';
+import { createProposal, expireStale, getProposal, listProposals, proposalId, saveProposal } from './proposals.mjs';
 import { apply } from './apply.mjs';
+import { syncAll } from './notify/index.mjs';
 import { dispatch } from './notify/index.mjs';
 import { savedDir } from './save.mjs';
 
@@ -151,9 +152,14 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
   week = week || isoWeek(now);
-  const changed = expireStale(vault, now);
+  // Remote answers (decision-api / GitHub Issues) are pulled first: silence is only silence once we could ask. A failed pull
+  // or a dry-run leaves overdue classification proposals pending instead of applying them.
+  let canAuto = !dryRun;
+  if (canAuto) {
+    try { canAuto = (await syncAll(ctx)).every((r) => r.ok !== false); } catch { canAuto = false; }
+  }
+  const changed = expireStale(vault, now, { auto: canAuto });
   const expired = changed.filter((p) => p.status === 'expired');
-  const autoApproved = changed.filter((p) => p.status === 'approved');
   // Reuse this week's triage if it exists: the sheet must show what was classified, and a re-run
   // costs LLM calls and can come out slightly different. --fresh forces a new classification; a saved result with
   // runner errors, no items, or older than the current inbox/included notes is not reused.
@@ -168,8 +174,12 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   }
   const descriptors = buildDescriptors(tri, aud, used, events);
   // Classification suggestions nobody answered for 7 days are applied as recommended (not on --dry-run).
-  const auto = dryRun ? { applied: [], prompts: [], errors: [] } : await apply(ctx, { now, onlyAuto: true });
-  const autoApplied = autoApproved; // newly auto-approved in this run (apply() ran for them right above)
+  const auto = canAuto ? await apply(ctx, { now, onlyAuto: true }) : { applied: [], prompts: [], errors: [] };
+  // What apply() really did for auto-approved proposals (including ones `attic pending` / `attic sync` approved earlier); failures are listed apart.
+  const autoOk = [...auto.applied, ...auto.prompts].map((x) => x.id);
+  const autoApplied = autoOk.map((id) => getProposal(vault, id)).filter((p) => p && !p.autoReportedAt); // each one is reported once
+  for (const p of autoApplied) saveProposal(vault, { ...p, autoReportedAt: now.toISOString() });
+  const autoErrors = auto.errors;
   const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
@@ -185,5 +195,5 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
       notified = await dispatch(ctx, msg, pending);
     }
   }
-  return { week, sheetFile, dryRun, expired: expired.length, autoApplied: autoApplied.map((p) => p.id), counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
+  return { week, sheetFile, dryRun, expired: expired.length, autoApplied: autoApplied.map((p) => p.id), autoErrors, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
 }

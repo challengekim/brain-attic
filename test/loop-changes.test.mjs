@@ -148,6 +148,14 @@ test('usage signals: projects mentioning the note, symlinks not followed, node_m
   assert.equal(u.get('i3').projects, 2);  // but their title is found in the project texts
 });
 
+test('usage signals: two repos with the same folder name count as two projects', () => {
+  const ctx = testCtx({ config: { triage: { include: [] } } });
+  const root = tmp('same-');
+  for (const d of ['a/app', 'b/app']) { fs.mkdirSync(path.join(root, d), { recursive: true }); fs.writeFileSync(path.join(root, d, 'README.md'), 'Prompt Caching'); }
+  ctx.config.triage.projectPaths = [path.join(root, 'a/app'), path.join(root, 'b/app')];
+  assert.equal(computeUsage(ctx, [{ id: 'i1', title: 'Prompt Caching' }]).get('i1').projects, 2);
+});
+
 test('usage signals: project paths also come from the projects file; per-project file cap holds', () => {
   const { ctx, items } = usageFixture();
   const repo = ctx.config.triage.projectPaths[0];
@@ -226,6 +234,7 @@ test('user instruction beats the auto rule: reject stays rejected, reclassify ch
   const rc = reclassify(ctx.vault, re.id, 'b', { now: new Date('2026-10-02T00:00:00Z') });
   assert.equal(rc.payload.op, 'note_auto');
   assert.equal(rc.recommended.class, 'c');
+  assert.equal(rc.generation, 2); assert.deepEqual(rc.external, {}); // old remote card/answers no longer match
   assert.throws(() => reclassify(ctx.vault, re.id, 'd', { now: new Date('2026-10-02T00:00:00Z') }), /보관|볼트 노트/);
   assert.equal(reclassify(ctx.vault, toA.id, 'a', { now: new Date('2026-10-02T00:00:00Z') }).status, 'rejected');
   const imm = decide(ctx.vault, now.id, 'approved', { now: new Date('2026-10-02T00:00:00Z') });
@@ -254,10 +263,16 @@ test('review() 8 days later: auto-applies silent classification proposals, expir
   assert.equal(getProposal(ctx.vault, c.id).status, 'applied');
   assert.equal(getProposal(ctx.vault, s.id).status, 'expired');
   assert.match(fs.readFileSync(r.sheetFile, 'utf8'), /7일 무응답으로 추천 분류가 자동 적용된 제안/);
-  // dry-run applies nothing
+  assert.deepEqual(r.autoErrors, []);
+  // dry-run neither approves nor applies: the proposal stays pending, so reject / reclassify still work
   const c2 = createProposal(ctx.vault, teachP('Q2'), T0).proposal;
-  await review(ctx, { now: DAY8, week: '2026-W41', dryRun: true });
-  assert.notEqual(getProposal(ctx.vault, c2.id).status, 'applied');
+  const dry = await review(ctx, { now: DAY8, week: '2026-W41', dryRun: true });
+  assert.equal(getProposal(ctx.vault, c2.id).status, 'pending');
+  assert.deepEqual(dry.autoApplied, []);
+  // a second real run reports each auto-applied proposal once
+  const again = await review(ctx, { now: DAY8, week: '2026-W41' });
+  assert.deepEqual(again.autoApplied, [c2.id]);
+  assert.deepEqual((await review(ctx, { now: DAY8, week: '2026-W41' })).autoApplied, []);
 });
 
 // ---------------------------------------------------------------- 4. quiz-first teach

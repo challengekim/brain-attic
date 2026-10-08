@@ -68,11 +68,12 @@ function autoApprove(vault, p, now, by = 'auto') {
  * Pending proposals past createdAt + TTL: classification proposals are auto-approved (autoApplied: true, applied by
  * `attic apply`), everything else is marked expired. Returns the ones changed (check .status).
  */
-export function expireStale(vault, now = new Date()) {
+export function expireStale(vault, now = new Date(), { auto = true } = {}) {
   const changed = [];
   for (const p of listProposals(vault, { status: 'pending' })) {
     if (deadline(p) > now.getTime()) continue;
-    if (isAutoApplicable(p)) { autoApprove(vault, p, now); changed.push(p); continue; }
+    // auto: false (dry-run, or a remote answer could not be fetched) leaves classification proposals pending instead of acting on silence.
+    if (isAutoApplicable(p)) { if (auto) { autoApprove(vault, p, now); changed.push(p); } continue; }
     p.status = 'expired'; p.expiredAt = now.toISOString(); saveProposal(vault, p); changed.push(p);
   }
   return changed;
@@ -94,7 +95,9 @@ export function reclassify(vault, id, cls, { by = 'cli', now = new Date() } = {}
   const was = { queue_teach: 'c', note_auto: 'b', archive_note: 'd' }[cur.op];
   p.recommended = p.recommended || { class: was, op: cur.op, kind: p.kind, payload: cur, summary: p.summary };
   p.userClass = cls; p.reclassifiedAt = now.toISOString(); p.reclassifiedBy = by;
-  if (cls === was) return p;
+  if (cls === was) return saveProposal(vault, p);
+  // The content changes: a new generation and no remote references, so an answer given to the old card cannot approve the new content.
+  p.generation = (p.generation || 1) + 1; p.external = {};
   if (cls === 'a') {
     p.status = 'rejected'; p.decidedAt = now.toISOString(); p.decidedBy = by; p.reclassifiedTo = 'a';
     return saveProposal(vault, p);

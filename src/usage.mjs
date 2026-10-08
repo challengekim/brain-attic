@@ -105,8 +105,9 @@ export function computeUsage(ctx, items, { projectLines = [], limits = LIMITS } 
   const out = new Map();
   const backMap = scanBacklinks(ctx.vault, limits);
   const roots = projectRoots(ctx, projectLines);
+  const names = new Map(roots.map((r) => [r.dir, r.name]));
   const needles = items.map((it) => needlesOf(it, limits.minNeedle));
-  const hits = items.map(() => new Set()); // project names per item
+  const hits = items.map(() => new Set()); // project roots (absolute dirs) per item; display names are kept apart
   for (const { dir, name } of roots) {
     const files = walk(dir, { exts: TEXT_EXT, maxFiles: limits.projectFiles, maxDepth: limits.projectDepth });
     let budget = limits.projectTotalBytes;
@@ -116,7 +117,7 @@ export function computeUsage(ctx, items, { projectLines = [], limits = LIMITS } 
       const text = readCapped(f, Math.min(limits.projectFileBytes, budget)).toLowerCase();
       budget -= text.length;
       for (const i of [...pending]) {
-        if (needles[i].some((n) => text.includes(n))) { hits[i].add(name); pending.delete(i); }
+        if (needles[i].some((n) => text.includes(n))) { hits[i].add(dir); pending.delete(i); }
       }
     }
   }
@@ -125,7 +126,7 @@ export function computeUsage(ctx, items, { projectLines = [], limits = LIMITS } 
     // Backlinks only make sense for notes that live in the vault (feed items have no note to link to).
     const keys = new Set(it.file ? [norm(it.file), norm(it.title || '')].filter(Boolean) : []);
     for (const k of keys) for (const s of backMap.get(k) || []) if (s !== it.file) srcs.add(s);
-    out.set(it.id, { backlinks: srcs.size, projects: hits[i].size, projectNames: [...hits[i]].sort() });
+    out.set(it.id, { backlinks: srcs.size, projects: hits[i].size, projectNames: [...hits[i]].map((d) => names.get(d)).sort() });
   });
   return out;
 }
