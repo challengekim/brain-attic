@@ -340,7 +340,7 @@ export async function teach(argv, ctx) {
     string: ['review', 'questions', 'model', 'lang'],
   });
   const positional = flags._;
-  if (flags.help || flags.h) { ctx.log.info(HELP); return 0; }
+  if (flags.help || argv.includes('-h')) { ctx.log.info(HELP); return 0; }
   const vault = requireVault(ctx);
 
   if (flags.queue || flags.due) {
