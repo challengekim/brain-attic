@@ -1,7 +1,11 @@
 # brain-attic
 
+**English** · [한국어](README.ko.md)
+
+_The name comes from Sherlock Holmes in A Study in Scarlet: the brain is a small "attic" (brain-attic), so choose carefully what you let in._
+
 > A weekly "attic" for your knowledge vault. It watches the model market, sorts what you collected into
-> **a / b / c**, audits your own skills for what just became possible, and turns everything into
+> **a / b / c / d**, audits your own skills for what just became possible, and turns everything into
 > **proposals that wait for your approval**. Zero dependencies. Node >= 20.
 
 ```
