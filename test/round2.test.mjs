@@ -9,6 +9,7 @@ import * as api from '../src/notify/decision-api.mjs';
 import { writeFileAtomic } from '../src/util.mjs';
 import { teach } from '../src/teach.mjs';
 
+const mkSys = (title) => ({ kind: 'improve', summary: [`개선: ${title}`], payload: { op: 'improve_candidate', file: `${title}.md` } }); // expires (never auto-applied)
 const mk = (title) => ({ kind: 'teach', summary: [`읽기: ${title}`], payload: { op: 'queue_teach', title } });
 const cfgFor = (s) => ({ type: 'decision-api', baseUrl: s.url + '/', tokenEnv: 'ATTIC_TEST_TOKEN', kind: 'knowledge' });
 function mock(answers) {
@@ -23,13 +24,13 @@ function mock(answers) {
 test('[r2-6] a revived proposal gets a new remote id; the old generation answer is acked but never applied', async () => {
   const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
   const t0 = new Date('2026-09-01T00:00:00Z');
-  const first = createProposal(ctx.vault, mk('X'), t0).proposal;
+  const first = createProposal(ctx.vault, mkSys('X'), t0).proposal;
   first.external = { 'decision-api': { sentAt: t0.toISOString(), changeId: first.id } };
   saveProposal(ctx.vault, first);
   // expire, then revive the same content
   decide(ctx.vault, first.id, 'approved', { now: new Date('2026-09-20T00:00:00Z') });
   assert.equal(getProposal(ctx.vault, first.id).status, 'expired');
-  const revived = createProposal(ctx.vault, mk('X'), new Date()).proposal;
+  const revived = createProposal(ctx.vault, mkSys('X'), new Date()).proposal;
   assert.equal(revived.id, first.id);
   assert.equal(revived.generation, 2);
   assert.equal(api.changeIdOf(revived), `${first.id}-g2`);

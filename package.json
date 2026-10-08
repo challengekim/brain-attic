@@ -1,7 +1,7 @@
 {
   "name": "brain-attic",
   "version": "0.1.0",
-  "description": "A weekly 'attic' for your knowledge vault: radar, triage (a/b/c), audit, approval-gated proposals. Zero dependencies.",
+  "description": "A weekly 'attic' for your knowledge vault: collect, save, radar, triage (a/b/c/d), audit, approval-gated proposals. Zero dependencies.",
   "type": "module",
   "bin": { "attic": "bin/attic.mjs" },
   "engines": { "node": ">=20" },

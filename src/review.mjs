@@ -4,11 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atticPath, ensureSkeleton, listRecentMd, writeAttic } from './vault.mjs';
 import { isoWeek, readJson } from './util.mjs';
-import { triage } from './triage.mjs';
+import { triage, renderRatioTable } from './triage.mjs';
 import { audit } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
-import { createProposal, expireStale, listProposals, proposalId } from './proposals.mjs';
+import { createProposal, expireStale, getProposal, listProposals, proposalId, saveProposal } from './proposals.mjs';
+import { apply } from './apply.mjs';
+import { syncAll } from './notify/index.mjs';
 import { dispatch } from './notify/index.mjs';
+import { savedDir } from './save.mjs';
 
 const MAX_TEACH = 8;
 /** b = "the system should apply this". Each one is a question to a human, so cap them per week. */
@@ -18,6 +21,8 @@ export const SHEET_B_MAX = 15;
 
 /** Where a triage item's text may later be read from: a vault note, a web link, or just its title. */
 export function kindOfItem(i) {
+  // An `attic save` note with a link holds only a memo: the page itself is what should be read later.
+  if (i.source === 'saved' && /^https?:\/\//i.test(String(i.url || ''))) return 'url';
   if (i.file) return 'vault';
   return /^https?:\/\//i.test(String(i.url || '')) ? 'url' : 'topic';
 }
@@ -32,16 +37,46 @@ export function triageIsStale(ctx, vault, saved) {
   try {
     for (const n of fs.readdirSync(inbox)) if (/\.md$/.test(n) && fs.statSync(path.join(inbox, n)).mtimeMs > since) return true;
   } catch { /* no inbox */ }
-  for (const folder of ctx.config.triage?.include || []) {
-    const dir = path.isAbsolute(folder) ? folder : path.join(vault, folder);
+  const manual = savedDir(vault);
+  for (const dir of [...(manual ? [manual] : []), ...(ctx.config.triage?.include || []).map((f) => (path.isAbsolute(f) ? f : path.join(vault, f)))]) {
     if (listRecentMd(dir, { sinceMs: since + 1 }).length) return true;
   }
   return false;
 }
 
+/** Radar event kinds that mean "a model (or a documented model endpoint) is new". */
+export const NEW_MODEL_KINDS = ['new', 'modality', 'kie_new'];
+export const SYSTEM_REVIEW_LIST = 10;
+
+/**
+ * New models this week -> ONE proposal per week: re-review the whole system (skills/scripts in audit.paths),
+ * not only the files a capability match points at. Approval only writes a prompt file a human runs.
+ */
+export function systemReviewDescriptor(events, aud) {
+  const fresh = (events || []).filter((e) => NEW_MODEL_KINDS.includes(e.kind));
+  if (!fresh.length) return null;
+  const ids = [...new Set(fresh.map((e) => e.id))];
+  const names = ids.slice(0, SYSTEM_REVIEW_LIST);
+  const inUse = Object.keys(aud?.models || {}).slice(0, 30);
+  return {
+    kind: 'system',
+    summary: [
+      `새 모델 ${ids.length}종이 나왔다 — 지금 쓰는 시스템 전체를 다시 검토할까요?`,
+      `예: ${names.join(', ')}${ids.length > names.length ? ` 외 ${ids.length - names.length}종` : ''}`,
+      inUse.length ? `지금 스킬·스크립트에서 쓰는 모델 ${Object.keys(aud.models).length}종 (audit.paths 기준)` : 'audit.paths 가 비어 있어 지금 쓰는 모델 목록은 없음 — config 에 스킬·스크립트 폴더를 넣으면 같이 대조합니다',
+    ],
+    payload: {
+      op: 'system_review', newModels: names, modelsInUse: inUse, scannedFiles: aud?.scannedFiles || 0,
+      prompt: '새 모델 목록과 지금 쓰는 모델 목록을 대조해, 작업별(텍스트·코드·이미지·영상·음성)로 지금 방식을 유지할지 바꿀지 표로 정리하세요. 바꾸자는 항목마다 이유(품질·가격·속도)와 시험 방법을 적고, 파일은 고치지 말고 제안만 하세요.',
+    },
+  };
+}
+
 /** used = proposals already created this ISO week per op, so the weekly caps hold across re-runs. */
-export function buildDescriptors(tri, aud, used = {}) {
+export function buildDescriptors(tri, aud, used = {}, events = []) {
   const out = [];
+  const sys = used.system_review ? null : systemReviewDescriptor(events, aud);
+  if (sys) out.push(sys);
   const cs = tri.items.filter((i) => i.class === 'c').slice(0, Math.max(0, MAX_TEACH - (used.queue_teach || 0)));
   for (const c of cs) {
     out.push({
@@ -77,13 +112,14 @@ export function buildDescriptors(tri, aud, used = {}) {
   return out;
 }
 
-export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso }) {
+export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [] }) {
   const L = [`# 승인 시트 ${week}`, '', `생성: ${nowIso}${dryRun ? ' (dry-run: 제안 저장·발송 안 함)' : ''}`, ''];
   L.push('## 1. 이번 주 레이더', '');
   if (!events.length) L.push('- 변화 없음 (또는 아직 기준선만 저장됨)');
   for (const e of events.slice(0, 40)) L.push(`- [${e.source}] \`${e.id}\` — ${e.detail}`);
   L.push('', '## 2. 분류 결과', '',
-    `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / d ${tri.counts.d ?? 0} / 미분류 ${tri.counts.unclassified} — c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}`);
+    `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / d ${tri.counts.d ?? 0} / 미분류 ${tri.counts.unclassified} — ${tri.weeklyMinutes != null ? `c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}` : `c 예상 시간 합계 ${tri.usedMinutes}분 (예산 상한 없음)`}`);
+  L.push(...renderRatioTable(tri.ratios));
   if (tri.errors.length) L.push(`- 러너 오류: ${tri.errors[0]} -> 해당 항목은 미분류로 남겼습니다 (지어내지 않음)`);
   for (const k of ['c', 'b', 'a']) {
     const rows = tri.items.filter((i) => i.class === k).slice(0, k === 'c' ? 30 : 15);
@@ -102,7 +138,12 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
   if (!descriptors.length) L.push('- 없음');
   for (const d of descriptors) {
     const id = proposalId(vault, d);
-    L.push(`- \`${id}\` (${d.kind}) ${d.summary[0]}`, `  - 승인: \`attic approve ${id}\` · 거절: \`attic reject ${id}\``);
+    const cls = { queue_teach: 'c', note_auto: 'b', archive_note: 'd' }[d.payload?.op];
+    L.push(`- \`${id}\` (${d.kind}) ${d.summary[0]}`, `  - 승인: \`attic approve ${id}\` · 거절: \`attic reject ${id}\`${cls ? ` · 분류 바꾸기: \`attic reclassify ${id} <a|b|c|d>\` · 답이 없으면 7일 뒤 추천(${cls}) 그대로 자동 적용` : ' · 답이 없으면 7일 뒤 만료'}`);
+  }
+  if (autoApplied.length) {
+    L.push('', '## 5. 7일 무응답으로 추천 분류가 자동 적용된 제안 (auto-applied)', '');
+    for (const p of autoApplied) L.push(`- \`${p.id}\` ${p.summary[0]}`);
   }
   return L.join('\n') + '\n';
 }
@@ -111,7 +152,14 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
   week = week || isoWeek(now);
-  const expired = expireStale(vault, now);
+  // Remote answers (decision-api / GitHub Issues) are pulled first: silence is only silence once we could ask. A failed pull
+  // or a dry-run leaves overdue classification proposals pending instead of applying them.
+  let canAuto = !dryRun;
+  if (canAuto) {
+    try { canAuto = (await syncAll(ctx)).every((r) => r.ok !== false); } catch { canAuto = false; }
+  }
+  const changed = expireStale(vault, now, { auto: canAuto });
+  const expired = changed.filter((p) => p.status === 'expired');
   // Reuse this week's triage if it exists: the sheet must show what was classified, and a re-run
   // costs LLM calls and can come out slightly different. --fresh forces a new classification; a saved result with
   // runner errors, no items, or older than the current inbox/included notes is not reused.
@@ -124,8 +172,15 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   for (const p of listProposals(vault)) {
     if (p.createdAt && isoWeek(new Date(p.createdAt)) === week && p.payload?.op) used[p.payload.op] = (used[p.payload.op] || 0) + 1;
   }
-  const descriptors = buildDescriptors(tri, aud, used);
-  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString() });
+  const descriptors = buildDescriptors(tri, aud, used, events);
+  // Classification suggestions nobody answered for 7 days are applied as recommended (not on --dry-run).
+  const auto = canAuto ? await apply(ctx, { now, onlyAuto: true }) : { applied: [], prompts: [], errors: [] };
+  // What apply() really did for auto-approved proposals (including ones `attic pending` / `attic sync` approved earlier); failures are listed apart.
+  const autoOk = [...auto.applied, ...auto.prompts].map((x) => x.id);
+  const autoApplied = autoOk.map((id) => getProposal(vault, id)).filter((p) => p && !p.autoReportedAt); // each one is reported once
+  for (const p of autoApplied) saveProposal(vault, { ...p, autoReportedAt: now.toISOString() });
+  const autoErrors = auto.errors;
+  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
   if (!dryRun) {
@@ -140,5 +195,5 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
       notified = await dispatch(ctx, msg, pending);
     }
   }
-  return { week, sheetFile, dryRun, expired: expired.length, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
+  return { week, sheetFile, dryRun, expired: expired.length, autoApplied: autoApplied.map((p) => p.id), autoErrors, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
 }

@@ -31,6 +31,7 @@ const HELP = `attic teach — 설명 → 퀴즈 → 내가 설명하기 → 채�
   attic teach --review <slug>       저장된 노트로 다시 설명해 보기(복습)
   attic teach --save-session <json> 대화(스킬)로 만든 pack + 세션을 같은 형식으로 저장
 옵션:
+  --quiz-first    문제 먼저: 설명문을 먼저 보여 주지 않고 문제부터 낸다. 원문을 보면서(오픈북) 답을 찾고, 채점 뒤에 근거를 보여 주고, 마지막에 «모르는 팀원에게 3문장으로» 설명한다
   --questions N   퀴즈 문항 수 (기본 4)
   --model M       이 명령에만 쓸 모델 (기본: config.teach.model, 없으면 claude=sonnet / codex=gpt-6.1-sol)
   --lang L        설명 언어 (기본: 원문과 같은 언어)
@@ -112,7 +113,7 @@ function rulesText() {
   try { return fs.readFileSync(p, 'utf8'); } catch { return ''; }
 }
 
-export function packPrompt({ sourceText, sourceLabel, questions, lang }) {
+export function packPrompt({ sourceText, sourceLabel, questions, lang, quizFirst = false }) {
   return [
     '너는 개념을 정확하게 가르치는 튜터다. 아래 규칙으로 설명하고, 학습자가 스스로 설명하게 만드는 질문을 만든다.',
     '',
@@ -125,6 +126,7 @@ export function packPrompt({ sourceText, sourceLabel, questions, lang }) {
     `- diagram_mermaid: 구성 요소와 연결을 보여 주는 mermaid flowchart 코드(펜스 없이). 필요 없으면 빈 문자열.`,
     `- terms: [{term, definition}] 핵심 용어 3~6개, 정의는 한 문장.`,
     `- quiz: 정확히 ${questions}문항. 각 {type: "recall"|"apply"|"misconception", question, choices: [보기 4개], answer: 정답 보기의 0부터 시작하는 번호, why: 정답 이유 한 문장}. 암기 1개 이하, 나머지는 «이 상황이면 어떻게 되나»(apply) 와 «흔한 오해»(misconception).`,
+    ...(quizFirst ? [`- 문제 먼저 모드: quiz 는 학습자가 설명을 읽기 전에 원문을 펼쳐 놓고 답을 찾아가는 «오픈북» 문제다. 질문에 정답의 단서를 쓰지 말고, 질문 한 문장에 질문 하나만 담고(ISO 24495-1·ASD-STE100: 짧게·능동태·조건 먼저), 각 문항에 evidence(원문에서 답이 있는 곳: 절 제목이나 문장 앞부분, 한 줄)를 넣어라. teach_back 의 첫 질문은 반드시 «이 개념을 모르는 팀원에게 3문장으로 설명해 보세요» 로 한다.`] : []),
     `- teach_back: 2~3개. 학습자가 «설명하게» 만드는 질문. 예: «이 개념을 모르는 팀원에게 3문장으로 설명해 보세요», «이게 없으면 무엇이 깨지나요?», «당신의 일에서 어디에 쓰겠습니까?». 각 {prompt, rubric: [좋은 답이 반드시 담아야 할 요점 2~4개]}.`,
     `- 언어: ${lang ? lang : '원문과 같은 언어(원문이 없으면 질문의 언어)'}.`,
     '- 원문에 없는 사실을 지어내지 마라. 원문이 주제 이름뿐이면 널리 확립된 지식만 쓰고, 불확실한 것은 불확실하다고 적어라.',
@@ -285,8 +287,8 @@ function sessionsFromPackFile(file) {
 
 // ---------------------------------------------------------------- session
 
-async function runSession(ctx, io, pack, opts) {
-  io.print(`\n=== 퀴즈 (${pack.quiz.length}문항) ===`);
+async function runSession(ctx, io, pack, opts, { quizFirst = false, afterQuiz } = {}) {
+  io.print(`\n=== ${quizFirst ? '문제 먼저 — 원문을 펼쳐 놓고 답을 찾아보세요' : '퀴즈'} (${pack.quiz.length}문항) ===`);
   let correct = 0;
   for (const [i, q] of pack.quiz.entries()) {
     io.print(`\n${i + 1}. ${q.question}`);
@@ -296,7 +298,9 @@ async function runSession(ctx, io, pack, opts) {
     const ok = pick === q.answer;
     if (ok) correct++;
     io.print(ok ? `   맞았습니다. ${q.why || ''}` : `   정답은 ${'abcd'[q.answer]}) 입니다. ${q.why || ''}`);
+    if (quizFirst && q.evidence) io.print(`   원문 근거: ${q.evidence}`);
   }
+  if (afterQuiz) await afterQuiz();
 
   io.print('\n=== 이제 직접 설명해 보세요 ===');
   const answers = [];
@@ -319,7 +323,7 @@ async function runSession(ctx, io, pack, opts) {
     answers.push({ prompt, answer, grade, percent });
   }
   const score = combinedScore(correct, pack.quiz.length, answers.map((a) => a.percent));
-  return { date: dateStr(), score, quizCorrect: correct, quizTotal: pack.quiz.length, answers };
+  return { date: dateStr(), score, quizCorrect: correct, quizTotal: pack.quiz.length, answers, ...(quizFirst ? { mode: 'quiz-first' } : {}) };
 }
 
 function saveNote(vault, slug, pack, sessions, source, sourceKind) {
@@ -398,7 +402,7 @@ export function saveSession(ctx, vault, file) {
     const total = pack.quiz.length;
     const correct = Number(s.quizCorrect);
     if (!Number.isInteger(correct) || correct < 0 || correct > total) throw new Error(`session.quizCorrect 는 0~${total} 정수`);
-    session = { date: dateStr(), score: combinedScore(correct, total, answers.map((a) => a.percent)), quizCorrect: correct, quizTotal: total, answers };
+    session = { date: dateStr(), score: combinedScore(correct, total, answers.map((a) => a.percent)), quizCorrect: correct, quizTotal: total, answers, ...(s.mode === 'quiz-first' ? { mode: 'quiz-first' } : {}) };
   }
   const slug = slugify(pack.title);
   const prior = sessionsFromPackFile(notePaths(vault, slug).pack);
@@ -409,7 +413,7 @@ export function saveSession(ctx, vault, file) {
 
 export async function teach(argv, ctx) {
   const flags = parseArgs(argv, {
-    bool: ['due', 'generate-only', 'help', 'json', 'queue', 'next'],
+    bool: ['due', 'generate-only', 'help', 'json', 'queue', 'next', 'quiz-first'],
     string: ['review', 'questions', 'model', 'lang', 'save-session'],
   });
   const positional = flags._;
@@ -459,7 +463,7 @@ export async function teach(argv, ctx) {
       if (!io) throw new Error('복습은 대화형 터미널에서만 됩니다.');
       // Trust is decided when the pack was made and stored with it. Missing or anything but 'topic' -> untrusted,
       // so deleting the source file later cannot downgrade a file-made pack to trusted.
-      const session = await runSession(ctx, io, saved.pack, { ...opts, untrusted: saved.sourceKind !== 'topic' });
+      const session = await runSession(ctx, io, saved.pack, { ...opts, untrusted: saved.sourceKind !== 'topic' }, { quizFirst: !!flags['quiz-first'] });
       const sessions = [...(saved.sessions || []), session];
       const { md, meta } = saveNote(vault, slug, saved.pack, sessions, saved.source, saved.sourceKind);
       io.print(`\n저장: ${md}\n점수 ${meta.score} · 다음 복습 ${meta.next_review} · ${meta.status}`);
@@ -471,7 +475,7 @@ export async function teach(argv, ctx) {
     const external = src.kind !== 'topic';
     ctx.log.info(`설명·퀴즈·질문을 만드는 중입니다 (${opts.runner}${opts.model ? `/${opts.model}` : ''})…`);
     const pack = await runJSON({
-      prompt: packPrompt({ sourceText: src.text, sourceLabel: src.label, questions, lang: flags.lang }),
+      prompt: packPrompt({ sourceText: src.text, sourceLabel: src.label, questions, lang: flags.lang, quizFirst: !!flags['quiz-first'] }),
       validate: (p) => validatePack(p, questions),
       ...opts,
       untrusted: external,
@@ -487,10 +491,21 @@ export async function teach(argv, ctx) {
       return 0;
     }
 
-    io.print(`\n# ${pack.title}\n\n${pack.explanation.trim()}`);
-    if (pack.diagram_mermaid) io.print(`\n[구조 (mermaid)]\n${pack.diagram_mermaid.trim()}`);
-    await io.ask('\n다 읽었으면 Enter 를 누르세요. 퀴즈가 시작됩니다. ');
-    const session = await runSession(ctx, io, pack, { ...opts, untrusted: external });
+    const showExplanation = () => {
+      io.print(`\n# ${pack.title}\n\n${pack.explanation.trim()}`);
+      if (pack.diagram_mermaid) io.print(`\n[구조 (mermaid)]\n${pack.diagram_mermaid.trim()}`);
+    };
+    const quizFirst = !!flags['quiz-first'];
+    let session;
+    if (quizFirst) {
+      io.print(`\n# ${pack.title}\n\n원문(${src.label})을 열어 두세요. 설명문은 문제를 푼 뒤에 보여 드립니다.`);
+      await io.ask('\n준비되면 Enter 를 누르세요. 문제가 시작됩니다. ');
+      session = await runSession(ctx, io, pack, { ...opts, untrusted: external }, { quizFirst, afterQuiz: showExplanation });
+    } else {
+      showExplanation();
+      await io.ask('\n다 읽었으면 Enter 를 누르세요. 퀴즈가 시작됩니다. ');
+      session = await runSession(ctx, io, pack, { ...opts, untrusted: external });
+    }
     const { md, meta } = saveNote(vault, slug, pack, [...prior, session], src.source, src.kind);
     io.print(`\n저장: ${md}\n점수 ${meta.score} · 다음 복습 ${meta.next_review}`);
     return 0;

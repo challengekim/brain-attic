@@ -112,7 +112,7 @@ test('[5] pull: a LOCAL proposal never published through decision-api is neither
 
 test('[5][6] pull: an answer for an expired-TTL proposal does not approve it (but is acked)', async () => {
   const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
-  const p = sent(ctx, createProposal(ctx.vault, mk('old'), new Date('2026-01-01T00:00:00Z')).proposal);
+  const p = sent(ctx, createProposal(ctx.vault, { kind: 'improve', summary: ['개선: old'], payload: { op: 'improve_candidate', file: 'old.md' } }, new Date('2026-01-01T00:00:00Z')).proposal);
   const s = await mock(() => ({ answers: [{ changeId: p.id, kind: 'knowledge', approved: true }] }));
   const r = await api.pull(ctx, cfgFor(s));
   await s.close();

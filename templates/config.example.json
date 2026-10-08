@@ -6,7 +6,7 @@
     { "type": "github", "name": "Codex releases", "repo": "openai/codex" }
   ],
   "llm": { "runner": "claude", "model": null, "timeoutMs": 180000 },
-  "triage": { "include": ["References", "Daily"], "weeklyMinutes": 180 },
+  "triage": { "include": ["References", "Daily"], "targetRatios": { "a": 0.30, "b": 0.45, "c": 0.05, "d": 0.20 }, "projectPaths": ["~/code/my-app"] },
   "audit": { "paths": ["~/.claude/skills", "~/.claude/scripts"] },
   "radar": { "priceThreshold": 0.2 },
   "notifiers": [

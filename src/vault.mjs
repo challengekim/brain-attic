@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { readJson, writeFileAtomic } from './util.mjs';
 
-export const ATTIC_DIRS = ['inbox', 'state', 'radar', 'triage', 'reviews', 'proposals', 'approved', 'retro', 'teach'];
+export const ATTIC_DIRS = ['inbox', 'saved', 'state', 'radar', 'triage', 'reviews', 'proposals', 'approved', 'retro', 'teach'];
 
 export function atticRoot(vault) { return path.join(vault, '_attic'); }
 export function atticPath(vault, ...p) { return path.join(vault, '_attic', ...p); }

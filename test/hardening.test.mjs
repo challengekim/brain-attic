@@ -243,7 +243,7 @@ test('[6] apply skips approvals whose decidedAt is later than createdAt + TTL', 
   const r = await apply(ctx);
   assert.equal(r.applied.length, 0);
   assert.equal(r.skipped.length, 1);
-  assert.equal(loadConfig(ctx.env, ctx.configPath).triage.weeklyMinutes, 180);
+  assert.equal(loadConfig(ctx.env, ctx.configPath).triage.weeklyMinutes, undefined); // default: no budget
 });
 
 // ---------------------------------------------------------------- 6. CLI uses decide()
@@ -307,7 +307,7 @@ function fakeLaunchctl() {
   return { dir, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '') };
 }
 
-test('[10] linux install/status/uninstall (really run against a fake crontab) all return {jobs:[3]} and print', async () => {
+test('[10] linux install/status/uninstall (really run against a fake crontab) all return {jobs: JOBS} and print', async () => {
   const cron = fakeCrontab();
   const ctx = testCtx({ env: { PATH: cron.dir } });
   const inst = await schedule(ctx, 'install', { platform: 'linux' });
@@ -317,9 +317,9 @@ test('[10] linux install/status/uninstall (really run against a fake crontab) al
   assert.doesNotThrow(() => renderScheduleResult(inst));
   const st = await schedule(ctx, 'status', { platform: 'linux' });
   assert.equal(st.installed, true);
-  assert.equal(st.jobs.length, 3);
+  assert.equal(st.jobs.length, JOBS.length);
   const un = await schedule(ctx, 'uninstall', { platform: 'linux' });
-  assert.equal(un.jobs.length, 3);
+  assert.equal(un.jobs.length, JOBS.length);
   assert.ok(un.jobs.every((j) => j.removed === true));
   assert.equal(cron.read(), '0 1 * * * backup.sh\n');
   assert.doesNotThrow(() => renderScheduleResult(un));
@@ -327,12 +327,12 @@ test('[10] linux install/status/uninstall (really run against a fake crontab) al
 
 test('[10] linux dry-run keeps the crontab text and also has jobs; darwin install/uninstall/status share the shape', async () => {
   const d = await schedule(testCtx(), 'install', { dryRun: true, platform: 'linux' });
-  assert.equal(d.jobs.length, 3);
+  assert.equal(d.jobs.length, JOBS.length);
   assert.match(renderScheduleResult(d), /brain-attic/);
   const lc = fakeLaunchctl();
   const ctx = testCtx({ env: { PATH: lc.dir } }); // fake launchctl only: the real LaunchAgents are never touched
   const i = await schedule(ctx, 'install', { platform: 'darwin' });
-  assert.equal(i.jobs.length, 3);
+  assert.equal(i.jobs.length, JOBS.length);
   assert.ok(i.jobs.every((j) => j.job && j.file.startsWith(ctx.home) && j.loaded === true));
   assert.ok(fs.existsSync(path.join(ctx.home, 'Library/LaunchAgents/com.brain-attic.radar.plist')));
   const s = await schedule(ctx, 'status', { platform: 'darwin' });
