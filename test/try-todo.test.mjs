@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { testCtx, tmp, startServer } from './helpers.mjs';
 import { atticPath, ensureSkeleton } from '../src/vault.mjs';
-import { isoWeek } from '../src/util.mjs';
+import { dateStr, isoWeek } from '../src/util.mjs';
 import { createProposal, decide, expireStale, getProposal, listProposals, saveProposal } from '../src/proposals.mjs';
 import { gatherItems, normalizeItem, normalizeProject, projectName, relevanceOf, TRIAGE_SCHEMA, triageInputKey } from '../src/triage.mjs';
 import { buildDescriptors, MAX_TRY, renderSheet, review } from '../src/review.mjs';
@@ -310,8 +310,9 @@ test('review fixes: config option prefixes survive; a live delivery cannot be re
   const c2 = testCtx({ config: { triage: { include: ['Refs'] } } }); ensureSkeleton(c2.vault);
   fs.mkdirSync(path.join(c2.vault, 'Refs'));
   fs.writeFileSync(path.join(c2.vault, 'Refs', 'mine.md'), '---\ntitle: 내 노트\nsource: https://e.test/same\nmy_relevance: 내 판단\n---\n');
-  fs.writeFileSync(atticPath(c2.vault, 'inbox', `${new Date().toISOString().slice(0, 10)}.md`), '### [Feed copy](https://e.test/same)\n- source: F\n> s\n');
-  const items = gatherItems(c2, isoWeek(new Date()), new Date());
+  const at = new Date(); // one timestamp, local calendar for both the file name and the week
+  fs.writeFileSync(atticPath(c2.vault, 'inbox', `${dateStr(at)}.md`), '### [Feed copy](https://e.test/same)\n- source: F\n> s\n');
+  const items = gatherItems(c2, isoWeek(at), at);
   const mine = items.find((i) => i.title === '내 노트');
   const feed = items.find((i) => i.title === 'Feed copy');
   assert.equal(mine.dupOf, undefined, 'the saved note is kept');
