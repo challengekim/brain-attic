@@ -120,3 +120,110 @@ test('[5][6] pull: an answer for an expired-TTL proposal does not approve it (bu
   assert.deepEqual(r.changed, []);
   assert.deepEqual(r.acked, [p.id]);
 });
+
+// ---------------------------------------------------------------- "change class" on the card (LCC reclassifyTo)
+
+const cls = (op, extra = {}) => ({ kind: op === 'queue_teach' ? 'teach' : op === 'note_auto' ? 'auto' : 'drop', summary: [`[x] ${op} ${JSON.stringify(extra)}`], payload: { op, title: 'T', url: 'https://e.test/1', kind: 'url', ...extra } });
+
+test('publish: classification proposals carry a reclassify offer (d only for vault notes); system proposals do not', async () => {
+  const s = await mock(() => ({}));
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const c = createProposal(ctx.vault, cls('queue_teach')).proposal;
+  const v = createProposal(ctx.vault, cls('note_auto', { file: 'Refs/n.md', kind: 'vault' })).proposal;
+  const sys = createProposal(ctx.vault, { kind: 'source', summary: ['출처 추가'], payload: { op: 'add_source', name: 'X' } }).proposal;
+  await api.publish(ctx, cfgFor(s), [c, v, sys]);
+  await s.close();
+  const body = (id) => s.log.find((e) => e.method === 'POST' && e.body.changeId === id).body;
+  assert.deepEqual(body(c.id).reclassify, { current: 'c', options: [{ value: 'a', label: 'a 인지만' }, { value: 'b', label: 'b 자동 반영' }, { value: 'c', label: 'c 설명하기' }] });
+  assert.deepEqual(body(v.id).reclassify.options.map((o) => o.value), ['a', 'b', 'c', 'd']);
+  assert.equal(body(v.id).reclassify.current, 'b');
+  assert.equal('reclassify' in body(sys.id), false);
+});
+
+test('pull: reclassifyTo b on a c proposal -> rewritten as note_auto and approved; acked', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const p = sent(ctx, createProposal(ctx.vault, cls('queue_teach')).proposal);
+  const s = await mock(() => ({ data: { answers: [{ changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'b', answeredAt: new Date().toISOString() }] } }));
+  const r = await api.pull(ctx, cfgFor(s));
+  await s.close();
+  const q = getProposal(ctx.vault, p.id);
+  assert.equal(q.status, 'approved');
+  assert.equal(q.payload.op, 'note_auto');
+  assert.equal(q.userClass, 'b');
+  assert.equal(q.recommended.class, 'c');
+  assert.equal(q.decidedBy, 'decision-api');
+  assert.deepEqual(r.changed, [p.id]);
+  assert.deepEqual(s.log.find((e) => e.method === 'PATCH').body.changeIds, [p.id]);
+});
+
+test('pull: reclassifyTo a closes the proposal (rejected, reclassifiedTo a), nothing gets applied', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const p = sent(ctx, createProposal(ctx.vault, cls('queue_teach')).proposal);
+  const s = await mock(() => ({ answers: [{ changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'a', answeredAt: new Date().toISOString() }] }));
+  await api.pull(ctx, cfgFor(s));
+  await s.close();
+  const q = getProposal(ctx.vault, p.id);
+  assert.equal(q.status, 'rejected');
+  assert.equal(q.reclassifiedTo, 'a');
+});
+
+test('pull: reclassifyTo equal to the recommendation is a plain approve', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const p = sent(ctx, createProposal(ctx.vault, cls('queue_teach')).proposal);
+  const s = await mock(() => ({ answers: [{ changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'c', answeredAt: new Date().toISOString() }] }));
+  await api.pull(ctx, cfgFor(s));
+  await s.close();
+  const q = getProposal(ctx.vault, p.id);
+  assert.equal(q.status, 'approved');
+  assert.equal(q.payload.op, 'queue_teach');
+});
+
+test('pull: an unusable reclassifyTo (d without a file / system proposal) leaves the proposal pending but acks', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const p = sent(ctx, createProposal(ctx.vault, cls('queue_teach')).proposal);
+  const sys = sent(ctx, createProposal(ctx.vault, { kind: 'source', summary: ['출처 추가'], payload: { op: 'add_source', name: 'X' } }).proposal);
+  const now = new Date().toISOString();
+  const s = await mock(() => ({ answers: [
+    { changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'd', answeredAt: now },
+    { changeId: sys.id, kind: 'knowledge', approved: true, reclassifyTo: 'b', answeredAt: now },
+  ] }));
+  const r = await api.pull(ctx, cfgFor(s));
+  await s.close();
+  assert.equal(getProposal(ctx.vault, p.id).status, 'pending');
+  assert.equal(getProposal(ctx.vault, sys.id).status, 'pending');
+  assert.deepEqual(r.ignored.sort(), [p.id, sys.id].sort());
+  assert.deepEqual(s.log.find((e) => e.method === 'PATCH').body.changeIds.sort(), [p.id, sys.id].sort());
+});
+
+test('pull: a pick made inside the TTL but pulled after it still applies the picked class', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const created = new Date(Date.now() - 9 * 86400000);
+  const p = createProposal(ctx.vault, cls('queue_teach'), created).proposal;
+  p.external = { 'decision-api': { sentAt: created.toISOString() } }; saveProposal(ctx.vault, p);
+  const answeredAt = new Date(created.getTime() + 2 * 86400000).toISOString();
+  const s = await mock(() => ({ answers: [{ changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'b', answeredAt }] }));
+  await api.pull(ctx, cfgFor(s));
+  await s.close();
+  const q = getProposal(ctx.vault, p.id);
+  assert.equal(q.status, 'approved');
+  assert.equal(q.payload.op, 'note_auto');
+});
+
+test('pull: after a reclassify, a failed ack is retried on the next pull (the changeId stays ours)', async () => {
+  const ctx = testCtx({ env: { ATTIC_TEST_TOKEN: 't' } });
+  const p = sent(ctx, createProposal(ctx.vault, cls('queue_teach')).proposal);
+  const answers = { answers: [{ changeId: p.id, kind: 'knowledge', approved: true, reclassifyTo: 'b', answeredAt: new Date().toISOString() }] };
+  const failing = await startServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET') return res.end(JSON.stringify(answers));
+    res.statusCode = 500; res.end('{}');
+  });
+  await assert.rejects(api.pull(ctx, cfgFor(failing)));
+  await failing.close();
+  assert.equal(getProposal(ctx.vault, p.id).payload.op, 'note_auto');
+  const s = await mock(() => answers);
+  const r = await api.pull(ctx, cfgFor(s));
+  await s.close();
+  assert.deepEqual(r.acked, [p.id]);
+  assert.equal(getProposal(ctx.vault, p.id).status, 'approved');
+});

@@ -210,7 +210,9 @@ test('[5] queue_teach proposal keeps file + kind, and apply puts them in the que
   const r = await apply(ctx);
   assert.equal(r.applied.length, 3);
   const q = JSON.parse(fs.readFileSync(atticPath(ctx.vault, 'teach', 'queue.json'), 'utf8'));
-  assert.deepEqual(q.map((x) => [x.kind, x.file]), [['vault', 'Refs/n.md'], ['url', undefined], ['topic', undefined]]);
+  // Proposals created in the same millisecond tie on createdAt and come back in readdir (random id) order, so compare as a set.
+  const key = (x) => `${x.kind}|${x.file ?? ''}`;
+  assert.deepEqual(q.map(key).sort(), ['topic|', 'url|', 'vault|Refs/n.md']);
 });
 
 test('[6] b items: listed in the sheet (top 15), at most 5 note_auto proposals, apply writes only a prompt file', async () => {
