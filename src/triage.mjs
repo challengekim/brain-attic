@@ -12,7 +12,7 @@ const BATCH = 40;
 /** Items sent to the LLM per week. Notes the user saved go first, then newest inbox items. */
 export const MAX_ITEMS = 120;
 export const SHEET_LIST_MAX = 15;
-export const CLASSES = ['a', 'b', 'c', 'unclassified'];
+export const CLASSES = ['a', 'b', 'c', 'd', 'unclassified'];
 
 export function gatherItems(ctx, week, now = new Date()) {
   const vault = requireVault(ctx);
@@ -44,21 +44,27 @@ export function gatherItems(ctx, week, now = new Date()) {
       });
     }
   }
-  const seen = new Set();
-  return items.filter((it) => { const k = it.url || `${it.source}:${it.title}`; if (seen.has(k)) return false; seen.add(k); return true; })
-    .map((it, i) => ({ ...it, id: `i${i + 1}` }));
+  // Duplicates (same URL, or same source+title) are kept but flagged: they become d without an LLM call.
+  const seen = new Map();
+  return items.map((it, i) => {
+    const k = it.url || `${it.source}:${it.title}`;
+    const dupOf = seen.get(k);
+    if (!dupOf) seen.set(k, `i${i + 1}`);
+    return { ...it, id: `i${i + 1}`, ...(dupOf ? { dupOf } : {}) };
+  });
 }
 
 function buildPrompt(batch, projects) {
   const list = batch.map((it) => JSON.stringify({ id: it.id, title: truncate(it.title, 120), url: it.url, summary: truncate(it.summary, 240), tags: it.tags || [] })).join('\n');
   return [
-    '너는 개인 지식 시스템의 주간 분류기다. 아래 항목을 각각 a/b/c 중 하나로 분류한다.',
+    '너는 개인 지식 시스템의 주간 분류기다. 아래 항목을 각각 a/b/c/d 중 하나로 분류한다.',
     '- a: 가볍게 읽고 인지만 한다. 존재를 아는 것만으로 쓸모가 있다.',
     '- b: 인지가 필요 없다. 시스템이 자동으로 적용하면 된다(예: 도구 업데이트).',
     '- c: 시간을 들여 깊게 읽고, 쓰고, 설명해 볼 것. 이 경우 minutes(예상 소요 분, 정수)를 반드시 적는다.',
+    '- d: 버릴 것. 다른 항목과 사실상 같은 내용(중복)이거나, 프로젝트 목록 어디에도 쓸모가 없고 알아 둘 가치도 없는 것(광고·행사 홍보·잡담 등).',
     `연결 프로젝트(project)는 아래 목록의 줄 하나를 그대로 적거나, 없으면 null.`,
     '프로젝트 목록:', projects.length ? projects.map((p) => `- ${p}`).join('\n') : '(없음)',
-    `출력 스키마: {"items":[{"id":"입력의 id","class":"a|b|c","project":"목록의 줄 또는 null","reason":"이유 한 줄","minutes":정수(c 일 때만)}]}`,
+    `출력 스키마: {"items":[{"id":"입력의 id","class":"a|b|c|d","project":"목록의 줄 또는 null","reason":"이유 한 줄","minutes":정수(c 일 때만)}]}`,
     UNTRUSTED_NOTICE, wrapUntrusted(list),
   ].join('\n');
 }
@@ -72,7 +78,7 @@ export function validateResponse(obj) {
 export function normalizeItem(raw, projects) {
   if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') return null;
   const cls = String(raw.class || '').toLowerCase();
-  if (!['a', 'b', 'c'].includes(cls)) return null;
+  if (!['a', 'b', 'c', 'd'].includes(cls)) return null;
   const reason = typeof raw.reason === 'string' ? raw.reason.trim().slice(0, 200) : '';
   if (!reason) return null;
   const out = { id: raw.id, class: cls, reason, project: projects.includes(raw.project) ? raw.project : null };
@@ -106,7 +112,9 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
   week = week || isoWeek(now);
-  const all = gatherItems(ctx, week, now);
+  const gathered = gatherItems(ctx, week, now);
+  const dups = gathered.filter((it) => it.dupOf);
+  const all = gathered.filter((it) => !it.dupOf);
   const maxItems = ctx.config.triage?.maxItems ?? MAX_ITEMS;
   const ranked = [...all].sort((x, y) => (x.source === 'vault' ? 0 : 1) - (y.source === 'vault' ? 0 : 1)
     || String(y.published || y.date || '').localeCompare(String(x.published || x.date || '')));
@@ -134,6 +142,9 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
     return c ? { ...base, class: c.class, project: c.project, reason: c.reason, ...(c.minutes ? { minutes: c.minutes } : {}) }
       : { ...base, class: 'unclassified', project: null, reason: '분류하지 못함' };
   });
+  for (const it of dups) {
+    result.push({ id: it.id, title: it.title, url: it.url, source: it.source, date: it.date, ...(it.file ? { file: it.file } : {}), class: 'd', project: null, reason: '같은 링크가 이번 주에 이미 들어와 있는 중복' });
+  }
   for (const it of overflow) {
     result.push({ id: it.id, title: it.title, url: it.url, source: it.source, date: it.date, class: 'unclassified', project: null, reason: `주간 상한 ${maxItems}건 초과 — 분류하지 않음` });
   }
@@ -150,13 +161,13 @@ export function renderTriage(t) {
     `- c 예산: ${t.usedMinutes}/${t.weeklyMinutes}분${t.demoted ? `, 예산 초과로 a 로 강등 ${t.demoted}건` : ''}`];
   if (t.overflow) L.push(`- 주간 상한을 넘어 분류하지 않은 항목 ${t.overflow}건 (config.triage.maxItems 로 조정)`);
   if (t.errors.length) L.push(`- 러너 오류 ${t.errors.length}건 (해당 항목은 미분류): ${t.errors[0]}`);
-  const names = { c: 'c — 깊게 읽고 쓰고 설명', a: 'a — 인지만', b: 'b — 자동 적용 대상', unclassified: '미분류' };
-  for (const k of ['c', 'a', 'b', 'unclassified']) {
+  const names = { c: 'c — 깊게 읽고 쓰고 설명', a: 'a — 인지만', b: 'b — 자동 적용 대상', d: 'd — 버릴 후보(중복·쓸모없음)', unclassified: '미분류' };
+  for (const k of ['c', 'a', 'b', 'd', 'unclassified']) {
     const rows = t.items.filter((i) => i.class === k);
     if (!rows.length) continue;
     L.push('', `## ${names[k]} (${rows.length})`);
     // a and unclassified can be long; the sheet is for a 10-minute weekly review, so show the top part only.
-    const shown = k === 'a' || k === 'unclassified' ? rows.slice(0, SHEET_LIST_MAX) : rows;
+    const shown = k === 'a' || k === 'd' || k === 'unclassified' ? rows.slice(0, SHEET_LIST_MAX) : rows;
     for (const r of shown) {
       const title = r.title.replace(/[\[\]]/g, '');
       // Vault notes have no URL: link them as Obsidian wiki links so they open in the vault.

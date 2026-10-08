@@ -13,6 +13,7 @@ import { dispatch } from './notify/index.mjs';
 const MAX_TEACH = 8;
 /** b = "the system should apply this". Each one is a question to a human, so cap them per week. */
 export const MAX_AUTO = 5;
+export const MAX_DROP = 5;
 export const SHEET_B_MAX = 15;
 
 /** Where a triage item's text may later be read from: a vault note, a web link, or just its title. */
@@ -57,6 +58,15 @@ export function buildDescriptors(tri, aud, used = {}) {
       payload: { op: 'note_auto', title: b.title, url: b.url, kind: kindOfItem(b), ...(b.file ? { file: b.file } : {}), project: b.project },
     });
   }
+  // d: only vault notes can be tidied, and never by attic itself (it does not write outside _attic/).
+  // Approval produces a prompt file a human runs (move to an archive folder, or delete).
+  for (const d of tri.items.filter((i) => i.class === 'd' && i.file).slice(0, Math.max(0, MAX_DROP - (used.archive_note || 0)))) {
+    out.push({
+      kind: 'drop',
+      summary: [`버릴 후보 — 이 노트를 보관함으로 옮길까요? ${d.title}`, `이유: ${d.reason}`],
+      payload: { op: 'archive_note', title: d.title, file: d.file, kind: 'vault' },
+    });
+  }
   for (const s of aud.suggestions) {
     out.push({
       kind: 'improve',
@@ -73,7 +83,7 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
   if (!events.length) L.push('- 변화 없음 (또는 아직 기준선만 저장됨)');
   for (const e of events.slice(0, 40)) L.push(`- [${e.source}] \`${e.id}\` — ${e.detail}`);
   L.push('', '## 2. 분류 결과', '',
-    `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / 미분류 ${tri.counts.unclassified} — c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}`);
+    `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / d ${tri.counts.d ?? 0} / 미분류 ${tri.counts.unclassified} — c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}`);
   if (tri.errors.length) L.push(`- 러너 오류: ${tri.errors[0]} -> 해당 항목은 미분류로 남겼습니다 (지어내지 않음)`);
   for (const k of ['c', 'b', 'a']) {
     const rows = tri.items.filter((i) => i.class === k).slice(0, k === 'c' ? 30 : 15);
