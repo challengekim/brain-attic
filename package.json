@@ -1,0 +1,13 @@
+{
+  "name": "brain-attic",
+  "version": "0.1.0",
+  "description": "A weekly 'attic' for your knowledge vault: radar, triage (a/b/c), audit, approval-gated proposals. Zero dependencies.",
+  "type": "module",
+  "bin": { "attic": "bin/attic.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "files": ["bin", "src", "skills", "templates", "install.sh", "README.md", "README.ko.md", "LICENSE"],
+  "keywords": ["obsidian", "knowledge", "rss", "cli", "llm", "triage"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/challengekim/brain-attic.git" }
+}

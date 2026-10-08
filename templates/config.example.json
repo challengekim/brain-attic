@@ -1,0 +1,18 @@
+{
+  "vault": "~/notes",
+  "projectsFile": null,
+  "sources": [
+    { "type": "rss", "name": "Hacker News Best", "url": "https://hnrss.org/best" },
+    { "type": "github", "name": "Codex releases", "repo": "openai/codex" }
+  ],
+  "llm": { "runner": "claude", "model": null, "timeoutMs": 180000 },
+  "triage": { "include": ["References", "Daily"], "weeklyMinutes": 180 },
+  "audit": { "paths": ["~/.claude/skills", "~/.claude/scripts"] },
+  "radar": { "priceThreshold": 0.2 },
+  "notifiers": [
+    { "type": "stdout" },
+    { "type": "discord", "webhookEnv": "ATTIC_DISCORD_WEBHOOK" },
+    { "type": "decision-api", "baseUrl": "https://your-app.example.com", "tokenEnv": "ATTIC_DECISION_TOKEN", "kind": "knowledge" },
+    { "type": "github-issues", "repo": "your-name/attic-inbox", "allowedUsers": ["your-name"] }
+  ]
+}

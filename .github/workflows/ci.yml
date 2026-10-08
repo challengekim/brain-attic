@@ -1,0 +1,22 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+      - name: install.sh in a temporary HOME
+        run: |
+          T="$(mktemp -d)"
+          BRAIN_ATTIC_REPO="$GITHUB_WORKSPACE" BRAIN_ATTIC_HOME="$T/share" HOME="$T" bash install.sh
+          HOME="$T" "$T/.local/bin/attic" doctor --json | node -e 'JSON.parse(require("fs").readFileSync(0,"utf8")); console.log("doctor --json ok")'

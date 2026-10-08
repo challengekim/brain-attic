@@ -1,0 +1,10 @@
+[
+  { "type": "rss", "name": "Anthropic News", "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_news.xml" },
+  { "type": "rss", "name": "OpenAI News", "url": "https://openai.com/news/rss.xml" },
+  { "type": "rss", "name": "Google AI Blog", "url": "https://blog.google/technology/ai/rss/" },
+  { "type": "rss", "name": "GeekNews", "url": "https://news.hada.io/rss/news" },
+  { "type": "rss", "name": "Hacker News Best", "url": "https://hnrss.org/best" },
+  { "type": "github", "name": "Claude Code releases", "repo": "anthropics/claude-code" },
+  { "type": "github", "name": "Codex releases", "repo": "openai/codex" },
+  { "type": "rss", "name": "Simon Willison", "url": "https://simonwillison.net/atom/everything/" }
+]

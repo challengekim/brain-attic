@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>Sample</title>
+<item><title><![CDATA[Hello & <b>World</b>]]></title><link>https://example.com/post-1/?utm_source=x&amp;id=7</link><description>&lt;p&gt;First &amp;amp; best&lt;/p&gt;</description><pubDate>Mon, 05 Oct 2026 10:00:00 GMT</pubDate></item>
+<item><title>Second</title><link>https://example.com/post-2/</link><description><![CDATA[<p>Plain <i>text</i></p>]]></description></item>
+<item><title>No link</title></item>
+</channel></rss>

@@ -1,0 +1,7 @@
+{"data":[
+{"id":"v/text-old","name":"V: Text Old","created":1,"architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000002"}},
+{"id":"v/cheap","name":"V: Cheap","created":2,"architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0.000010","completion":"0.000020"}},
+{"id":"v/gains","name":"V: Gains","created":3,"architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000001"}},
+{"id":"v/stable","name":"V: Stable","created":4,"architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"0.000001","completion":"0.000001"}},
+{"id":"openrouter/auto","name":"Auto","created":5,"architecture":{"input_modalities":["text"],"output_modalities":["text"]},"pricing":{"prompt":"-1","completion":"-1"}}
+]}
