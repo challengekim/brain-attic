@@ -7,7 +7,7 @@ import { isoWeek, readJson } from './util.mjs';
 import { triage, renderRatioTable } from './triage.mjs';
 import { audit } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
-import { createProposal, expireStale, getProposal, listProposals, proposalId, saveProposal } from './proposals.mjs';
+import { createProposal, expireStale, getProposal, isAutoApplicable, itemKey, listProposals, OP_CLASS, proposalId, saveProposal, withdraw } from './proposals.mjs';
 import { apply } from './apply.mjs';
 import { syncAll } from './notify/index.mjs';
 import { dispatch } from './notify/index.mjs';
@@ -167,9 +167,23 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const tri = !triageIsStale(ctx, vault, saved) ? saved : await triage(ctx, { week, now });
   const aud = await audit(ctx, { now });
   const events = recentEvents(vault, 7, now);
-  // Weekly caps count proposals already created this week (a re-run or --fresh must not add more).
+  // A re-run of the same week (or --fresh) must not leave the earlier run's classification proposals behind when
+  // this classification disagrees: they would be auto-applied after 7 days. Withdraw them (not on --dry-run).
+  const thisWeekPending = () => listProposals(vault, { status: 'pending' })
+    .filter((p) => p.source === 'review' && isAutoApplicable(p) && p.createdAt && isoWeek(new Date(p.createdAt)) === week);
+  const withdrawn = [];
+  if (!dryRun) {
+    const classOf = new Map((tri.items || []).map((it) => [itemKey(it), it.class]));
+    for (const p of thisWeekPending()) {
+      const cls = classOf.get(itemKey(p.payload));
+      if (cls === OP_CLASS[p.payload.op]) continue;
+      withdrawn.push(withdraw(vault, p.id, { by: 'review', now, reason: `같은 주 재분류에서 ${cls ?? '빠짐'} — 이 제안은 더 이상 맞지 않습니다` }).id);
+    }
+  }
+  // Weekly caps count proposals already created this week (a re-run or --fresh must not add more). Withdrawn ones do not count.
   const used = {};
   for (const p of listProposals(vault)) {
+    if (p.status === 'withdrawn') continue;
     if (p.createdAt && isoWeek(new Date(p.createdAt)) === week && p.payload?.op) used[p.payload.op] = (used[p.payload.op] || 0) + 1;
   }
   const descriptors = buildDescriptors(tri, aud, used, events);
@@ -185,6 +199,12 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   let proposals = [], notified = [];
   if (!dryRun) {
     proposals = descriptors.map((d) => createProposal(vault, { ...d, source: 'review' }, now).proposal);
+    // Same note proposed again with new wording (a new id): keep this run's card, withdraw the older duplicate.
+    const fresh = new Map(proposals.filter(isAutoApplicable).map((p) => [itemKey(p.payload), p.id]));
+    for (const p of thisWeekPending()) {
+      const newer = fresh.get(itemKey(p.payload));
+      if (newer && newer !== p.id) withdrawn.push(withdraw(vault, p.id, { by: 'review', now, reason: `중복 — ${newer} 로 대체` }).id);
+    }
     const pending = listProposals(vault, { status: 'pending' });
     if (pending.length) {
       const msg = {
@@ -195,5 +215,5 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
       notified = await dispatch(ctx, msg, pending);
     }
   }
-  return { week, sheetFile, dryRun, expired: expired.length, autoApplied: autoApplied.map((p) => p.id), autoErrors, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
+  return { week, sheetFile, dryRun, expired: expired.length, withdrawn, autoApplied: autoApplied.map((p) => p.id), autoErrors, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
 }

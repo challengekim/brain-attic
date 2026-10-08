@@ -6,7 +6,9 @@ import { atticPath, ensureSkeleton, getInstanceId, writeAtticJson } from './vaul
 import { readJson, sha256, stableStringify } from './util.mjs';
 
 export const TTL_DAYS = 7;
-export const STATUSES = ['pending', 'approved', 'rejected', 'expired', 'applied'];
+// withdrawn = the system took its own suggestion back (a later review of the same week superseded it, or `attic withdraw`).
+// It is never applied, never auto-approved, and does not count as a human rejection.
+export const STATUSES = ['pending', 'approved', 'rejected', 'expired', 'applied', 'withdrawn'];
 
 export function proposalId(vault, { kind, summary, payload }) {
   return 'attic-' + sha256(getInstanceId(vault) + stableStringify({ kind, summary, payload })).slice(0, 12);
@@ -26,16 +28,16 @@ export const AUTO_OPS = ['queue_teach', 'note_auto', 'archive_note'];
 export const isAutoApplicable = (p) => AUTO_OPS.includes(p?.payload?.op);
 const deadline = (p) => new Date(p.createdAt).getTime() + TTL_DAYS * 86400000;
 
-/** Same content -> same id (idempotent). An expired duplicate is revived as pending. */
+/** Same content -> same id (idempotent). An expired or withdrawn duplicate is revived as pending. */
 export function createProposal(vault, { kind, summary, payload, source = 'review' }, now = new Date()) {
   ensureSkeleton(vault);
   const lines = (Array.isArray(summary) ? summary : String(summary).split('\n')).map((s) => String(s).trim()).filter(Boolean);
   const id = proposalId(vault, { kind, summary: lines, payload });
   const existing = readJson(file(vault, id), null);
-  if (existing && existing.status !== 'expired') return { proposal: existing, created: false };
+  if (existing && !['expired', 'withdrawn'].includes(existing.status)) return { proposal: existing, created: false };
   const p = {
     id, kind, summary: lines, payload, source, status: 'pending',
-    // A revived (previously expired) proposal is a new generation: answers given to an older
+    // A revived (previously expired/withdrawn) proposal is a new generation: answers given to an older
     // generation must not approve this one (see notify/decision-api.mjs).
     generation: existing ? (existing.generation || 1) + 1 : 1,
     createdAt: now.toISOString(),
@@ -78,6 +80,23 @@ export function expireStale(vault, now = new Date(), { auto = true } = {}) {
   }
   return changed;
 }
+
+/**
+ * Take back a pending proposal the system no longer stands behind (superseded by a later run, a duplicate, a wrong
+ * suggestion). Only pending ones: an answered proposal is the user's, not ours to take back. Returns the proposal.
+ */
+export function withdraw(vault, id, { by = 'cli', reason = '', now = new Date() } = {}) {
+  const p = getProposal(vault, id);
+  if (!p) throw new Error(`제안을 찾지 못했습니다: ${id}`);
+  if (p.status !== 'pending') throw new Error(`${id}: 이미 ${p.status} 상태라 철회할 수 없습니다`);
+  p.status = 'withdrawn'; p.withdrawnAt = now.toISOString(); p.withdrawnBy = by;
+  if (reason) p.withdrawReason = String(reason).slice(0, 300);
+  return saveProposal(vault, p);
+}
+
+/** Which note/link a classification proposal is about (file, else url, else title). */
+export function itemKey(x) { return x?.file || x?.url || x?.title || ''; }
+export const OP_CLASS = { queue_teach: 'c', note_auto: 'b', archive_note: 'd' };
 
 /**
  * The user changes the class of a pending classification proposal (their instruction beats the recommendation).

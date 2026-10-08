@@ -19,6 +19,7 @@ const HELP = {
   review [--dry-run] [--fresh] [--json] 승인 시트 + 제안 발송
   approve <id> | reject <id> | pending
   reclassify <id> <a|b|c|d>           분류 제안의 분류를 내가 정한다 (7일 무응답 자동 적용보다 우선)
+  withdraw <id...> [--reason <글>]    대기 중인 제안을 철회한다 (중복·낡은 제안. 적용·자동 적용되지 않는다)
   sync                                양방향 어댑터에서 답을 가져오고 자기 것만 ack
   apply                               승인된 제안 적용 (화이트리스트 연산만 직접)
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
@@ -33,6 +34,7 @@ const HELP = {
   triage: '사용법: attic triage [--week YYYY-Www]\n  a=인지만 b=자동 적용 c=깊게(예상 분 포함) d=버릴 것. 기본은 상한 없이 전부 분류하고 실제 비율 vs 기대 비율(triage.targetRatios)은 보고서에 보이기만 한다. config 에 maxItems / weeklyMinutes 를 적었으면 그 상한을 지킨다. 여러 프로젝트에서 쓰이거나 자주 링크된 지식은 c 후보. LLM 실패 시 미분류.',
   audit: '사용법: attic audit [--json]\n  config.audit.paths 의 모델 ID/도구를 목록화하고 radar 사건과 대조해 개선 후보를 냅니다 (모델명 단순 치환 제안은 없음).',
   review: '사용법: attic review [--dry-run] [--fresh] [--json]\n  triage + audit + radar -> _attic/reviews/YYYY-Www.md, 제안 저장·발송. 이번 주 분류가 있으면 재사용(--fresh 로 다시 분류). --dry-run 은 시트만.',
+  withdraw: '사용법: attic withdraw <id...> [--reason <글>]\n  대기 중(pending)인 제안만 철회합니다. 철회한 제안은 적용되지 않고, 7일이 지나도 자동 적용되지 않으며, 회고의 승인율에도 들어가지 않습니다.\n  이미 앱(decision-api)에 보낸 카드는 남지만, 거기서 눌러도 로컬에서는 아무것도 바뀌지 않습니다(ack 만 합니다).',
   reclassify: '사용법: attic reclassify <id> <a|b|c|d>\n  대기 중인 분류 제안(c 설명하기 / b 자동 적용 / d 보관)의 분류를 바꿉니다. a 는 «인지만» 이라 제안을 닫습니다. 분류 제안은 7일 동안 답이 없으면 추천 분류 그대로 자동 적용됩니다.',
   approve: '사용법: attic approve <id>', reject: '사용법: attic reject <id>', pending: '사용법: attic pending [--json]',
   sync: '사용법: attic sync\n  decision-api / github-issues 에서 답을 가져옵니다. 로컬에 있는 제안 id 만 ack 합니다.',
@@ -53,7 +55,7 @@ async function main(argv) {
   if (!(cmd in HELP)) { console.error(`알 수 없는 명령: ${cmd}\n`); console.error(HELP._); return 2; }
   // teach has its own detailed help in src/teach.mjs
   if (cmd !== 'teach' && (rest.includes('--help') || rest.includes('-h'))) { console.log(HELP[cmd]); return 0; }
-  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title'], bool: ['json', 'yes', 'dry-run', 'fresh'] });
+  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title', 'reason'], bool: ['json', 'yes', 'dry-run', 'fresh'] });
   const ctx = makeCtx({ vaultOverride: args.vault && cmd !== 'init' ? args.vault : undefined });
 
   switch (cmd) {
@@ -130,6 +132,18 @@ async function main(argv) {
       if (!id || !cls) { console.error(HELP.reclassify); return 2; }
       try { const p = reclassify(requireVault(ctx), id, String(cls).toLowerCase(), { by: 'cli' }); console.log(`${p.id}: 분류 ${p.userClass}${p.status === 'pending' ? ' (대기 중, 승인하거나 7일 뒤 자동 적용)' : ` (${p.status})`}`); return 0; }
       catch (e) { console.error(e.message); return 1; }
+    }
+    case 'withdraw': {
+      const { withdraw } = await import('../src/proposals.mjs');
+      const ids = args._;
+      if (!ids.length) { console.error(HELP.withdraw); return 2; }
+      const vault = requireVault(ctx);
+      let rc = 0;
+      for (const id of ids) {
+        try { const p = withdraw(vault, id, { by: 'cli', reason: args.reason || '' }); console.log(`${p.id}: withdrawn`); }
+        catch (e) { console.error(e.message); rc = 1; }
+      }
+      return rc;
     }
     case 'pending': {
       const { listProposals, expireStale } = await import('../src/proposals.mjs');
