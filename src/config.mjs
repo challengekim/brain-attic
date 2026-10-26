@@ -13,7 +13,7 @@ export const DEFAULTS = {
   // `maxItems` / `weeklyMinutes` apply only when the user sets them. `targetRatios` is shown to the model and in the
   // report as an expectation; it is never enforced. `projectPaths`: project repos scanned for usage signals.
   triage: { include: [], exclude: [], targetRatios: { a: 0.30, b: 0.45, c: 0.05, d: 0.20 }, projectPaths: [] },
-  audit: { paths: [] },
+  audit: { paths: [], exclude: [] },
   radar: { openrouterUrl: 'https://openrouter.ai/api/v1/models', kieLlmsUrl: 'https://docs.kie.ai/llms.txt', priceThreshold: 0.2 },
   notifiers: [{ type: 'stdout' }],
 };

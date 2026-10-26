@@ -5,7 +5,7 @@ import path from 'node:path';
 import { atticPath, ensureSkeleton, listRecentMd, writeAttic } from './vault.mjs';
 import { isoWeek, readJson } from './util.mjs';
 import { triage, renderRatioTable, TRIAGE_SCHEMA, triageInputKey, tryRank } from './triage.mjs';
-import { audit } from './audit.mjs';
+import { audit, isSkippedDir } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
 import { createProposal, desiredOp, expireStale, getProposal, isItemProposal, itemKey, listProposals, OP_CLASS, proposalId, saveProposal, withdraw } from './proposals.mjs';
 import { apply } from './apply.mjs';
@@ -139,10 +139,21 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
     out.push({
       kind: 'improve',
       summary: [s.text],
-      payload: { op: 'improve_candidate', file: s.file, capability: s.capability, eventKey: s.eventKey },
+      payload: { op: 'improve_candidate', file: s.file, files: s.files, capability: s.capability, eventKey: s.eventKey, eventKeys: s.eventKeys },
     });
   }
   return out;
+}
+
+/**
+ * Improve cards from before audit grouped per skill (one card per file, no `files`) or about a deleted/archived skill
+ * (skills/.trash/...): the system takes them back. Only pending ones -- an answered card is the user's.
+ */
+export function retireStaleImprove(vault, now = new Date()) {
+  const stale = (p) => p.payload?.op === 'improve_candidate' && typeof p.payload.file === 'string'
+    && (!Array.isArray(p.payload.files) || p.payload.file.split(/[\\/]/).slice(1, -1).some(isSkippedDir));
+  return listProposals(vault, { status: 'pending' }).filter(stale)
+    .map((p) => withdraw(vault, p.id, { by: 'review', now, reason: '스킬 단위로 묶기 전(파일마다 한 장)이거나 지운 스킬(.trash 등)에 대한 개선 후보 — 철회' }).id);
 }
 
 export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [] }) {
@@ -237,6 +248,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     .map((p) => itemKey(p.payload)));
   const withdrawn = [];
   if (!dryRun) {
+    withdrawn.push(...retireStaleImprove(vault, now));
     const itemOf = new Map((tri.items || []).map((it) => [itemKey(it), it]));
     for (const p of thisWeekPending()) {
       if (p.userClass) continue;

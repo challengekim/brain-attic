@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { testCtx, tmp, ROOT, fakeLlmEnv } from './helpers.mjs';
 import { DEFAULTS } from '../src/config.mjs';
+import { isoWeek } from '../src/util.mjs';
 import { triage, normalizeRatios, ratioReport, renderTriage } from '../src/triage.mjs';
 import { computeUsage, scanBacklinks, needlesOf, LIMITS } from '../src/usage.mjs';
 import { atticPath, ensureSkeleton } from '../src/vault.mjs';
@@ -178,7 +179,8 @@ test('usage signals reach the prompt, with the "two or more projects / often lin
   Object.assign(ctx.env, { BRAIN_ATTIC_LLM_CMD: `${process.execPath} ${LOGLLM}`, FAKE_LLM_LOG: log });
   ctx.config.triage.include = ['Refs'];
   ctx.config.llm = { runner: 'claude', model: null, timeoutMs: 20000 };
-  const t = await triage(ctx, { week: '2026-W41', now: new Date() });
+  const now = new Date(); // the fixture notes are "recent" by wall-clock mtime, so the week must be this one
+  const t = await triage(ctx, { week: isoWeek(now), now });
   const prompt = fs.readFileSync(log, 'utf8');
   assert.match(prompt, /"usage":\{"backlinks":2,"projects":2\}/);
   assert.match(prompt, /둘 이상의 프로젝트.*c\(내 것으로 만들 것\) 후보/);
