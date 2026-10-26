@@ -18,6 +18,7 @@ function setup({ mode = 'ok', budget = 180, runner = 'claude' } = {}) {
   fs.writeFileSync(atticPath(ctx.vault, 'inbox', '2026-09-01.md'), '### [Old](https://e.test/old)\n- source: Feed\n'); // other week
   fs.mkdirSync(path.join(ctx.vault, 'Refs'));
   fs.writeFileSync(path.join(ctx.vault, 'Refs', 'note.md'), '---\ntitle: "Vault Note"\nurl: https://v.test/n\nsummary: from vault\ntags: [ai, agents]\n---\nbody');
+  fs.utimesSync(path.join(ctx.vault, 'Refs', 'note.md'), NOW, NOW); // "recent" relative to NOW, not the wall clock
   fs.writeFileSync(path.join(ctx.vault, 'Refs', 'stale.md'), 'old');
   const old = new Date('2026-08-01'); fs.utimesSync(path.join(ctx.vault, 'Refs', 'stale.md'), old, old);
   return ctx;
@@ -25,7 +26,7 @@ function setup({ mode = 'ok', budget = 180, runner = 'claude' } = {}) {
 
 test('gatherItems: this week inbox + recently modified vault notes (frontmatter), not other weeks or stale notes', () => {
   const ctx = setup();
-  const items = gatherItems(ctx, '2026-W41', new Date());
+  const items = gatherItems(ctx, '2026-W41', NOW);
   const titles = items.map((i) => i.title);
   assert.ok(titles.includes('Item 1') && titles.includes('Vault Note'));
   assert.ok(!titles.includes('Old') && !titles.includes('stale'));
@@ -36,7 +37,7 @@ test('gatherItems: this week inbox + recently modified vault notes (frontmatter)
 
 test('triage with a working runner: classes, project link only from the list, c has minutes', async () => {
   const ctx = setup();
-  const t = await triage(ctx, { week: '2026-W41', now: new Date() });
+  const t = await triage(ctx, { week: '2026-W41', now: NOW });
   assert.equal(t.items.length, 7);
   assert.equal(t.counts.unclassified, 0);
   assert.deepEqual(t.items.map((i) => i.class).slice(0, 3), ['a', 'b', 'c']);
@@ -49,27 +50,27 @@ test('triage with a working runner: classes, project link only from the list, c 
 
 test('triage with broken JSON -> everything 미분류, nothing invented', async () => {
   const ctx = setup({ mode: 'broken' });
-  const t = await triage(ctx, { week: '2026-W41', now: new Date() });
+  const t = await triage(ctx, { week: '2026-W41', now: NOW });
   assert.equal(t.counts.unclassified, 7);
   assert.equal(t.counts.a + t.counts.b + t.counts.c, 0);
   assert.equal(t.errors.length, 1);
 });
 
 test('triage with runner none / schema violation -> 미분류', async () => {
-  const none = await triage(setup({ runner: 'none', mode: 'ok' }) , { week: '2026-W41', now: new Date() });
+  const none = await triage(setup({ runner: 'none', mode: 'ok' }) , { week: '2026-W41', now: NOW });
   assert.equal(none.counts.unclassified, 7);
-  const bad = await triage(setup({ mode: 'badschema' }), { week: '2026-W41', now: new Date() });
+  const bad = await triage(setup({ mode: 'badschema' }), { week: '2026-W41', now: NOW });
   assert.equal(bad.counts.unclassified, 7);
 });
 
 test('partially invalid items: invalid ones become 미분류, valid kept', async () => {
-  const t = await triage(setup({ mode: 'partial' }), { week: '2026-W41', now: new Date() });
+  const t = await triage(setup({ mode: 'partial' }), { week: '2026-W41', now: NOW });
   assert.equal(t.counts.a, 1);
   assert.equal(t.counts.unclassified, 6);
 });
 
 test('budget: c over weeklyMinutes is demoted to a and says so', async () => {
-  const t = await triage(setup({ mode: 'allc', budget: 250 }), { week: '2026-W41', now: new Date() });
+  const t = await triage(setup({ mode: 'allc', budget: 250 }), { week: '2026-W41', now: NOW });
   assert.equal(t.counts.c, 2);          // 2 x 100 = 200 <= 250, third would be 300
   assert.equal(t.counts.a, 5);
   assert.equal(t.demoted, 5);

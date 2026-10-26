@@ -171,7 +171,8 @@ Claude Code·Codex 에서는 같은 루프를 `attic-teach` 스킬로 대화하�
 | `triage.weeklyMinutes` | 선택. c 항목의 주간 시간 예산. 기본은 없음(무제한). 적어 두면 넘는 c 는 a 로 강등합니다. |
 | `triage.targetRatios` | a/b/c/d 기대 비율(기본 0.30/0.45/0.05/0.20, 합 1). 모델에게 알려 주고 보고서에 «실제 vs 기대» 로 보이기만 합니다. 강제하지 않습니다. |
 | `triage.projectPaths` | 사용 신호를 셀 프로젝트 저장소 경로(배열 또는 `{이름: 경로}`). `_attic/projects.md` 줄에 적은 경로도 씁니다. 프로젝트 20개, 프로젝트당 텍스트 파일 200개·2MB 까지, 심볼릭 링크 제외. |
-| `audit.paths[]` | `.md .sh .mjs .py .toml .json` 을 훑을 디렉터리 목록. |
+| `audit.paths[]` | `.md .sh .mjs .py .toml .json` 을 훑을 디렉터리 목록. 점으로 시작하는 폴더(`.trash`·`.cache` 등)·`node_modules`·`archive`/`_archive`·`disabled*` 는 건너뜁니다. 제안은 스킬(가장 가까운 `SKILL.md` 폴더, 없으면 `<경로>/<폴더>`)·능력(image/video/audio)마다 한 장으로 그 주에 새로 나온 모델·문서를 함께 적고(가격 인하는 스킬·모델마다 한 장), 스킬이 밝힌 용도로만 맞춥니다: `SKILL.md` 의 name·description, 없으면 `README.md`, 낱개 파일은 첫 15줄. |
+| `audit.exclude[]` | 빼고 볼 접두어. 제안에 보이는 모양 그대로 씁니다(예: 다른 앱이 동기화해 넣는 `skills/synced`). |
 | `radar` | `priceThreshold`(0.2), `openrouterUrl`, `kieLlmsUrl`. |
 | `notifiers[]` | 아래 참고. |
 | `envFiles[]` | `KEY=VALUE` 줄을 담은 파일 목록(예: 웹훅·토큰이 든 chmod 600 파일). 예약 실행에서도 환경변수로 들어갑니다. 이미 있는 환경변수가 이깁니다. 값은 config 에 적지 않습니다. |

@@ -177,7 +177,8 @@ In Claude Code or Codex, the `attic-teach` skill runs the same loop as a convers
 | `triage.weeklyMinutes` | Optional time budget for c items. Unset by default (no budget); if set, c over the budget is demoted to a. |
 | `triage.targetRatios` | Expected share of a/b/c/d (default 0.30/0.45/0.05/0.20, must sum to 1). Shown to the model and in the report as « actual vs expected »; never forced. |
 | `triage.projectPaths` | Project repos (array of paths, or `{name: path}`) scanned for usage signals. Paths written in `_attic/projects.md` lines also count. Up to 20 projects, 200 text files / 2 MB per project; symlinks are not followed. |
-| `audit.paths[]` | Directories to scan for `.md .sh .mjs .py .toml .json`. |
+| `audit.paths[]` | Directories to scan for `.md .sh .mjs .py .toml .json`. Dot dirs (`.trash`, `.cache`…), `node_modules`, `archive`/`_archive`, `disabled*` are skipped. One suggestion per skill (nearest folder with `SKILL.md`, else `<path>/<folder>`) and capability, listing the week's new models/docs of that kind (price drops: one per skill and model), matched on its declared purpose: `SKILL.md` name+description, else `README.md`, else a loose file's first 15 lines. |
+| `audit.exclude[]` | Prefixes to leave out, written as suggestions show them (e.g. `skills/synced` for skills another app syncs in). |
 | `radar` | `priceThreshold` (0.2), `openrouterUrl`, `kieLlmsUrl`. |
 | `notifiers[]` | See below. |
 | `envFiles[]` | Files with `KEY=VALUE` lines (for example a chmod 600 file that already holds a webhook or token). Loaded into the environment, also for scheduled runs. Existing env vars win. Values never go into config.json. |
