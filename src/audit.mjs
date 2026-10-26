@@ -74,12 +74,12 @@ export function scanDir(root, { maxFiles = 3000, maxBytes = 1_000_000 } = {}) {
 }
 
 /**
- * The unit a suggestion is about: the nearest dir holding a SKILL.md (skills/synced/<id>/pdf), else `<root>/<name>`
+ * The unit a suggestion is about: the nearest dir holding a SKILL.md (skills/synced/<id>/pdf, or the audit path itself), else `<root>/<name>`
  * for anything inside a package dir (skills/foo/...), else the loose file itself (scripts/x.sh).
  */
 export function groupOf(rel, skillDirs = new Set()) {
   const parts = rel.split(/[\\/]/);
-  for (let i = parts.length - 1; i >= 2; i--) { const dir = parts.slice(0, i).join('/'); if (skillDirs.has(dir)) return dir; }
+  for (let i = parts.length - 1; i >= 1; i--) { const dir = parts.slice(0, i).join('/'); if (skillDirs.has(dir)) return dir; }
   return parts.length > 2 ? parts.slice(0, 2).join('/') : parts.join('/');
 }
 
@@ -118,13 +118,15 @@ const whatMany = (cap, evs) => `${cap} 쪽에 새로 나온 것 ${evs.length}건
 
 /**
  * Pure: files (scan results) x radar events -> suggestions. One card per skill/package and capability (new models and
- * docs of that kind listed together, never one card per file or per doc), one per skill and model for a price drop.
+ * docs of that kind listed together), one per skill and model for price drops (prompt and completion together) --
+ * never one card per file or per doc.
  */
 export function suggest(files, events, { limit = 10 } = {}) {
   const groups = groupFiles(files);
   const out = [];
   const byKey = new Map();
   const seenEv = new Set();
+  const add = (k, make, ev) => { let s = byKey.get(k); if (!s) { byKey.set(k, s = { ...make(), evs: [] }); out.push(s); } s.evs.push(ev); };
   for (const ev of events) {
     if (ev.kind === 'price_rise' || seenEv.has(ev.key)) continue;
     seenEv.add(ev.key);
@@ -133,9 +135,7 @@ export function suggest(files, events, { limit = 10 } = {}) {
     if (ev.kind === 'price_drop') {
       for (const g of groups) {
         const using = g.files.filter((f) => f.models.some((m) => m.toLowerCase() === id || id.endsWith('/' + m.toLowerCase())));
-        if (!using.length) continue;
-        out.push({ file: g.group, files: using.slice(0, EXAMPLES).map((f) => f.rel), eventKey: ev.key, eventKeys: [ev.key], capability: null,
-          text: `\`${g.group}\`${exampleText(g, using)} 가 쓰는 \`${ev.id}\` 의 가격이 내렸다 (${ev.detail}). 지금 쓰는 방식이 이 가격에서도 최선인지 다시 볼까?` });
+        if (using.length) add(`${g.group}\u0000price\u0000${id}`, () => ({ file: g.group, files: using.slice(0, EXAMPLES).map((f) => f.rel), capability: null, model: ev.id, g, using }), ev);
       }
       continue;
     }
@@ -144,22 +144,21 @@ export function suggest(files, events, { limit = 10 } = {}) {
       const cap = caps.find((c) => g.caps.includes(c));
       if (!cap) continue;
       if (g.models.some((m) => m.toLowerCase() === id)) continue;
-      const k = `${g.group}\u0000${cap}`;
-      let s = byKey.get(k);
-      if (!s) {
+      add(`${g.group}\u0000${cap}`, () => {
         const list = g.files.filter((f) => f.caps.includes(cap));
-        byKey.set(k, s = { file: g.group, files: (list.length ? list : g.files).slice(0, EXAMPLES).map((f) => f.rel), capability: cap, g, evs: [] });
-        out.push(s);
-      }
-      s.evs.push(ev);
+        return { file: g.group, files: (list.length ? list : g.files).slice(0, EXAMPLES).map((f) => f.rel), capability: cap, g };
+      }, ev);
     }
   }
-  return out.slice(0, limit).map((s) => {
-    if (!s.evs) return s;
-    const { g, evs, ...rest } = s;
-    const using = g.models.slice(0, 3).join(', ');
-    return { ...rest, eventKey: evs[0].key, eventKeys: evs.map((e) => e.key),
-      text: `\`${g.group}\` 가 ${s.capability} 관련 작업을 하는 것으로 보인다${using ? ` (언급된 모델: ${using})` : ''}. ${evs.length === 1 ? what(evs[0]) : whatMany(s.capability, evs)} — 시도해 볼까?` };
+  return out.slice(0, limit).map(({ g, evs, using, ...rest }) => {
+    const keys = { eventKey: evs[0].key, eventKeys: evs.map((e) => e.key) };
+    if (using) {
+      return { ...rest, ...keys,
+        text: `\`${g.group}\`${exampleText(g, using)} 가 쓰는 \`${evs[0].id}\` 의 가격이 내렸다 (${evs.map((e) => e.detail).join('; ')}). 지금 쓰는 방식이 이 가격에서도 최선인지 다시 볼까?` };
+    }
+    const names = g.models.slice(0, 3).join(', ');
+    return { ...rest, ...keys,
+      text: `\`${g.group}\` 가 ${rest.capability} 관련 작업을 하는 것으로 보인다${names ? ` (언급된 모델: ${names})` : ''}. ${evs.length === 1 ? what(evs[0]) : whatMany(rest.capability, evs)} — 시도해 볼까?` };
   });
 }
 
