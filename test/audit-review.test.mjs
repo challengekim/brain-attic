@@ -99,15 +99,56 @@ test('declared purpose decides: SKILL.md (nearest, so nested skills are their ow
   assert.deepEqual(out.map((s) => s.file).sort(), ['skills/make-thumb.sh', 'skills/pkg', 'skills/synced/abc/pdf']);
 });
 
-test('price drop: one suggestion per skill, listing the files that use the model', () => {
+test('price drop: one suggestion per skill and model (all price fields), listing the files that use it', () => {
   const out = suggest([
     { rel: 'skills/a/SKILL.md', models: ['gpt-6-luna'], tools: [], caps: [] },
     { rel: 'skills/a/scripts/x.sh', models: ['gpt-6-luna'], tools: [], caps: [] },
     { rel: 'skills/a/scripts/y.sh', models: [], tools: [], caps: [] },
-  ], [ev({ kind: 'price_drop', id: 'openai/gpt-6-luna', detail: 'prompt -40%' })]);
-  assert.equal(out.length, 1);
+  ], [ev({ kind: 'price_drop', id: 'openai/gpt-6-luna', detail: 'prompt -40%' }), { key: 'or:price:openai/gpt-6-luna:completion:1', kind: 'price_drop', id: 'openai/gpt-6-luna', detail: 'completion -30%' }]);
+  assert.equal(out.length, 1); // prompt and completion of one model: one card
+  assert.equal(out[0].model, 'openai/gpt-6-luna');
+  assert.match(out[0].text, /\(prompt -40%; completion -30%\)/);
   assert.deepEqual(out[0].files, ['skills/a/SKILL.md', 'skills/a/scripts/x.sh']);
   assert.match(out[0].text, /\(파일 2개, 예: SKILL\.md, scripts\/x\.sh\)/);
+});
+
+test('an audit path that is itself a skill is one unit', () => {
+  const root = path.join(tmp('skills-root-'), 'thumb');
+  write(root, 'SKILL.md', '---\nname: thumb\ndescription: 썸네일 이미지\n---\n');
+  write(root, 'run.py', 'image');
+  write(root, 'scripts/x.py', 'image');
+  const out = suggest(scanDir(root), [imgEvent]);
+  assert.deepEqual(out.map((s) => s.file), ['thumb']);
+  assert.equal(out[0].files.length, 3);
+});
+
+test('review: a newer card for the same skill and capability replaces the pending older one; an answered one stays', async () => {
+  const root = path.join(tmp('skills-root-'), 'skills');
+  write(root, 'thumb/SKILL.md', '---\nname: thumb\ndescription: image\n---\n');
+  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
+  ensureSkeleton(ctx.vault);
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
+  const evA = { ...imgEvent, key: 'kie:a', name: 'A', date: day };
+  const evB = { ...imgEvent, key: 'kie:b', name: 'B', date: day };
+  const improve = () => listProposals(ctx.vault).filter((p) => p.payload.op === 'improve_candidate');
+  writeJson(atticPath(ctx.vault, 'radar', 'events.json'), [evA]);
+  await review(ctx, { now });
+  const [first] = improve();
+  assert.equal(first.status, 'pending');
+  writeJson(atticPath(ctx.vault, 'radar', 'events.json'), [evA, evB]);
+  const r = await review(ctx, { now });
+  const live = improve().filter((p) => p.status === 'pending');
+  assert.equal(live.length, 1);
+  assert.deepEqual(live[0].payload.eventKeys, ['kie:a', 'kie:b']);
+  assert.equal(getProposal(ctx.vault, first.id).status, 'withdrawn');
+  assert.ok(r.withdrawn.includes(first.id));
+  // the user answers the A+B card; a later run with more events must not take that answer back
+  decide(ctx.vault, live[0].id, 'rejected', { by: 'cli' });
+  writeJson(atticPath(ctx.vault, 'radar', 'events.json'), [evA, evB, { ...imgEvent, key: 'kie:c', name: 'C', date: day }]);
+  await review(ctx, { now });
+  assert.equal(getProposal(ctx.vault, live[0].id).status, 'rejected');
+  assert.equal(improve().filter((p) => p.status === 'pending').length, 1);
 });
 
 test('audit.exclude drops prefixes as suggestions show them', async () => {

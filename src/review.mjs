@@ -139,7 +139,7 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
     out.push({
       kind: 'improve',
       summary: [s.text],
-      payload: { op: 'improve_candidate', file: s.file, files: s.files, capability: s.capability, eventKey: s.eventKey, eventKeys: s.eventKeys },
+      payload: { op: 'improve_candidate', file: s.file, files: s.files, capability: s.capability, ...(s.model ? { model: s.model } : {}), eventKey: s.eventKey, eventKeys: s.eventKeys },
     });
   }
   return out;
@@ -289,6 +289,15 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   let proposals = [], notified = [];
   if (!dryRun) {
     proposals = descriptors.map((d) => createProposal(vault, { ...d, source: 'review' }, now).proposal);
+    // One live improve card per skill and capability/model: when the events behind it changed (a re-run, next week's
+    // review before the old card expired), the new card replaces the pending older one instead of piling up beside it.
+    const improveKey = (p) => `${p.payload.file}\u0000${p.payload.capability || `price:${String(p.payload.model || '').toLowerCase()}`}`;
+    const freshImprove = new Map(proposals.filter((p) => p.payload?.op === 'improve_candidate').map((p) => [improveKey(p), p.id]));
+    for (const p of listProposals(vault, { status: 'pending' })) {
+      if (p.payload?.op !== 'improve_candidate') continue;
+      const newer = freshImprove.get(improveKey(p));
+      if (newer && newer !== p.id) withdrawn.push(withdraw(vault, p.id, { by: 'review', now, reason: `같은 스킬의 새 개선 후보 ${newer} 로 대체` }).id);
+    }
     // Same note proposed again with new wording (a new id): keep this run's card, withdraw the older duplicate.
     const fresh = new Map(proposals.filter(isItemProposal).map((p) => [itemKey(p.payload), p.id]));
     for (const p of thisWeekPending()) {
