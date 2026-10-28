@@ -1,5 +1,5 @@
 # 백로그 원장
 
 이 폴더는 brain-attic 에서 «나중에 할 일»을 한 파일에 한 건씩(`B-NNN-<kebab>.md`) 담습니다. 공개 리포라 여기 적는 내용은 모두 공개됩니다.
-목록 페이지 `docs/backlog.md` 는 생성물입니다. 손으로 고치지 말고 `node ~/.claude/scripts/build-backlog-index.mjs . --project brain-attic --public` 로 다시 만듭니다.
+목록 페이지 `docs/backlog.md` 는 생성물입니다. 손으로 고치지 말고 원장을 고친 뒤 백로그 생성기로 다시 만듭니다.
 규칙: 릴리즈노트·결정필요·백로그 운영 규칙 문서(§7 백로그)를 따릅니다.
