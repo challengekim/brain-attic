@@ -1,7 +1,8 @@
 # 릴리즈노트 — brain-attic
 
-## 2026-10-28 — 릴리즈노트·결정필요 문서 추가
+## 2026-10-28 — 릴리즈노트·결정필요·백로그 문서 추가
 - 무엇이 바뀌었는지는 `docs/release-notes.md`, 정해야 할 것은 `docs/need-decision.md` 에서 볼 수 있습니다.
+- 나중에 할 일은 `docs/backlog.md`(백로그)에서 볼 수 있습니다. 지금은 비어 있습니다.
 
 ## 2026-10-26 — 스킬 점검 카드가 스킬마다 한 장으로
 - `attic audit` 가 지운 스킬(`.trash`)·캐시·`node_modules`·보관(`archive`)·`disabled` 폴더를 건너뜁니다.
