@@ -1,7 +1,8 @@
 ---
 id: D-001
 title: 업무·채팅 도구(슬랙·디스코드·메일·Jira) 수집기를 brain-attic 에 넣을 것인가
-status: OPEN
+status: DECIDED
+decided: 2026-10-28
 raised: 2026-10-08
 due: 업무 대화를 a/b/c/d 분류에 넣고 싶어질 때
 priority: 🟢
@@ -23,3 +24,7 @@ README 에 «내장 수집기 없음» 으로만 적어 두었습니다. 만들�
 ## 지금 어떻게 해뒀나 (무응답 시 이대로 간다)
 
 내장 수집기는 만들지 않습니다. README 두 벌에 «업무·채팅은 내보낸 노트 폴더를 `triage.include` 로» 를 적어 두었습니다.
+
+## 결정
+
+LCC 결정필요에서 완료 처리(2026-10-28)
