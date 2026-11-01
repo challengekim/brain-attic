@@ -8,6 +8,7 @@ import { createProposal, getProposal, withdraw, reclassify } from '../src/propos
 import { dispatch, resendUnsent } from '../src/notify/index.mjs';
 import * as api from '../src/notify/decision-api.mjs';
 import { tryRunLock, withRunLock } from '../src/runlock.mjs';
+import { createHash } from 'node:crypto';
 
 // A card that could not reach the app (down, offline) must not wait for the next weekly review: the hourly tick re-sends it.
 
@@ -156,7 +157,7 @@ test('run lock: a lock still being created (empty, fresh) is held; an empty lock
   assert.ok(again);
   assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
   again();
-  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n.startsWith('run.lock')), []); // no leftovers
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n === 'run.lock' || n.includes('stale')), []); // no leftovers
 });
 
 test('attic tick skips the hour while another run holds the lock', () => {
@@ -178,4 +179,34 @@ test('attic tick skips the hour while another run holds the lock', () => {
   assert.equal(out.locked, undefined);
   assert.deepEqual(out.resent, []);
   assert.equal(fs.existsSync(lock), false); // released
+});
+
+test('run lock: a stale lock is reclaimed by exactly one contender; a paused contender never moves a live lock', () => {
+  const ctx = testCtx();
+  const dir = path.join(ctx.vault, '_attic', 'state');
+  const file = path.join(dir, 'run.lock');
+  tryRunLock(ctx.vault)(); // creates the state dir
+  fs.writeFileSync(file, '999999999'); // dead owner
+  // another contender already holds the reclaim token for this stale file: back off, leave the file alone
+  const st = fs.statSync(file);
+  const token = path.join(dir, 'run.lock.reclaim-' + createHash('sha256').update(`${st.ino}:${st.mtimeMs}:999999999`).digest('hex').slice(0, 32));
+  fs.mkdirSync(token);
+  assert.equal(tryRunLock(ctx.vault), null);
+  assert.equal(fs.readFileSync(file, 'utf8'), '999999999');
+  fs.rmdirSync(token);
+  // the winner reclaims it and holds a fresh lock
+  const b = tryRunLock(ctx.vault);
+  assert.ok(b);
+  assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
+  // a late contender (inspected the stale file before) finds the token taken and the path holding a live lock: nothing moves
+  assert.equal(tryRunLock(ctx.vault), null);
+  assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
+  b();
+  // tokens older than a day are swept on the next successful take
+  const tokens = () => fs.readdirSync(dir).filter((n) => n.startsWith('run.lock.reclaim-'));
+  assert.equal(tokens().length, 1);
+  const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(path.join(dir, tokens()[0]), old, old);
+  tryRunLock(ctx.vault)();
+  assert.deepEqual(tokens(), []);
 });
