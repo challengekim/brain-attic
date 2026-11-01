@@ -142,6 +142,23 @@ test('run lock: one holder at a time, a dead owner\'s lock is taken over', async
   assert.equal(fs.existsSync(file), false);
 });
 
+test('run lock: a lock still being created (empty, fresh) is held; an empty lock left by a crash is reclaimed', () => {
+  const ctx = testCtx();
+  const release = tryRunLock(ctx.vault);
+  release();
+  const file = path.join(ctx.vault, '_attic', 'state', 'run.lock');
+  fs.writeFileSync(file, ''); // another process between open('wx') and writing its pid
+  assert.equal(tryRunLock(ctx.vault), null);
+  assert.equal(fs.existsSync(file), true); // not deleted from under its owner
+  const old = new Date(Date.now() - 5 * 60 * 1000);
+  fs.utimesSync(file, old, old);
+  const again = tryRunLock(ctx.vault);
+  assert.ok(again);
+  assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
+  again();
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n.startsWith('run.lock')), []); // no leftovers
+});
+
 test('attic tick skips the hour while another run holds the lock', () => {
   const home = tmp();
   const vault = path.join(home, 'vault');
