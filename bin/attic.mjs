@@ -22,7 +22,7 @@ const HELP = {
   withdraw <id...> [--reason <글>]    대기 중인 제안을 철회한다 (중복·낡은 제안. 적용·자동 적용되지 않는다)
   sync                                양방향 어댑터에서 답을 가져오고 자기 것만 ack
   apply                               승인된 제안 적용 (화이트리스트 연산만 직접, 해 볼 것은 할일로)
-  tick                                sync + apply 한 번 (예약: 매시 20분 — 앱에서 누른 승인을 1시간 안에 반영)
+  tick                                재발송 + sync + apply 한 번 (예약: 매시 20분 — 못 보낸 카드 재발송, 앱에서 누른 승인을 1시간 안에 반영)
   todo [status] | todo resolve <id> --delivered|--retry   결과를 알 수 없는 할일 배달 확인
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
   schedule install|uninstall|status [--dry-run]
@@ -41,7 +41,7 @@ const HELP = {
   approve: '사용법: attic approve <id>', reject: '사용법: attic reject <id>', pending: '사용법: attic pending [--json]',
   sync: '사용법: attic sync\n  decision-api / github-issues 에서 답을 가져옵니다. 로컬에 있는 제안 id 만 ack 합니다.',
   apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, try_in_project(해 볼 것)는 지시문을 쓰고 config.todo 가 있으면 할일을 하나 만듭니다, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
-  tick: '사용법: attic tick\n  양방향 어댑터에서 답을 가져오고(sync) 승인된 제안을 적용(apply)합니다. 만료는 하지 않습니다(월요일 review 몫). 예약이 매시 20분에 돌립니다.',
+  tick: '사용법: attic tick\n  알림 때 못 보낸 대기 제안을 양방향 어댑터로 다시 보내고, 양방향 어댑터에서 답을 가져오고(sync) 승인된 제안을 적용(apply)합니다. 만료는 하지 않습니다(월요일 review 몫). 예약이 매시 20분에 돌립니다.',
   todo: '사용법: attic todo [status] | attic todo resolve <id> --delivered|--retry\n  할일 명령이 시간 초과·알 수 없는 종료로 끝났거나 도중에 멈춘 «해 볼 것» 을 보여줍니다. 앱에서 attic:<id> 를 찾아보고,\n  있으면 --delivered(닫기), 없으면 --retry(다음 apply 가 다시 만든다).',
   retro: '사용법: attic retro [--month YYYY-MM] [--dry-run]\n  기본은 지난달.',
   schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. collect 매일 08:00, radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00, tick 매시 20분.',
@@ -179,13 +179,15 @@ async function main(argv) {
       return r.errors.length ? 1 : 0;
     }
     case 'tick': {
-      const { syncAll } = await import('../src/notify/index.mjs');
+      const { syncAll, resendUnsent } = await import('../src/notify/index.mjs');
       const { apply } = await import('../src/apply.mjs');
       requireVault(ctx);
+      const resent = await resendUnsent(ctx);
       const res = await syncAll(ctx);
       const r = await apply(ctx);
       console.log(JSON.stringify({ at: new Date().toISOString(), sync: res.map((x) => ({ type: x.type, ok: x.ok !== false, changed: x.changed?.length ?? 0, ...(x.error ? { error: x.error } : {}) })),
-        applied: r.applied.map((x) => x.id), prompts: r.prompts.map((x) => x.id), skipped: r.skipped.length, errors: r.errors }));
+        applied: r.applied.map((x) => x.id), prompts: r.prompts.map((x) => x.id), skipped: r.skipped.length, errors: r.errors,
+        resent: resent.map((x) => ({ type: x.type, ok: x.ok !== false, sent: x.sent ?? 0, ...(x.error ? { error: x.error } : {}) })) }));
       return 0;
     }
     case 'todo': {

@@ -24,6 +24,9 @@ function approversFor(cfg) {
   return Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.filter((u) => typeof u === 'string' && u.trim()).map((u) => u.trim().toLowerCase()) : [];
 }
 
+/** Already published through this adapter (an issue exists). */
+export const isPublished = (p) => Boolean(p.external?.[KEY]?.number);
+
 export async function publish(ctx, cfg, proposals) {
   needGh(ctx, cfg);
   let approvers = approversFor(cfg);

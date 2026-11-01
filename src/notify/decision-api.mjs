@@ -20,6 +20,9 @@ export function unwrapAnswers(body) {
   return Array.isArray(d?.answers) ? d.answers : [];
 }
 
+/** Already published through this adapter (the app has this card). */
+export const isPublished = (p) => Boolean(p.external?.['decision-api']?.sentAt);
+
 export async function publish(ctx, cfg, proposals) {
   const headers = auth(ctx, cfg);
   let sent = 0;
