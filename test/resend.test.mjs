@@ -208,3 +208,24 @@ test('run lock: a contender paused after inspecting a stale lock backs off once 
   b();
   assert.equal(fs.existsSync(file), false);
 });
+
+test('attic tick skips the hour while another run holds the lock', () => {
+  const home = tmp();
+  const vault = path.join(home, 'vault');
+  fs.mkdirSync(path.join(vault, '_attic', 'state'), { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(home, 'xdg') };
+  const tick = () => spawnSync(process.execPath, [path.join(ROOT, 'bin/attic.mjs'), 'tick', '--vault', vault], { env, encoding: 'utf8' });
+  const lock = path.join(vault, '_attic', 'state', 'run.lock');
+  fs.writeFileSync(lock, String(process.pid)); // a live owner (this test process)
+  const held = tick();
+  assert.equal(held.status, 0, held.stderr);
+  assert.equal(JSON.parse(held.stdout.trim()).locked, true);
+  assert.equal(fs.readFileSync(lock, 'utf8'), String(process.pid)); // not taken or removed
+  fs.unlinkSync(lock);
+  const free = tick();
+  assert.equal(free.status, 0, free.stderr);
+  const out = JSON.parse(free.stdout.trim());
+  assert.equal(out.locked, undefined);
+  assert.deepEqual(out.resent, []);
+  assert.equal(fs.existsSync(lock), false); // released
+});
