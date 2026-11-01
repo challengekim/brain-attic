@@ -6,7 +6,7 @@
 // tick then reports `locked` every hour and the other commands stop with a message naming the lock file.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { atticMkdir, atticPath, atticWritePath } from './vault.mjs';
 
 const DIR = 'state';
@@ -17,8 +17,9 @@ function ownerAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
-// A lock file is created empty and gets its pid a moment later: an unreadable lock is "being taken", not stale, unless old.
-const INIT_GRACE_MS = 60 * 1000;
+// The lock is published complete (pid written to a temp file, then hard-linked into place), so a live owner's lock always
+// holds its pid. An unreadable lock can only be debris (a crash of an older version, a hand edit): stale once it is old.
+const DEBRIS_GRACE_MS = 60 * 1000;
 
 /** {pid, held, id} for the lock at `file` (id = which file: inode, mtime, content), or null when there is none. */
 function inspect(file) {
@@ -27,7 +28,7 @@ function inspect(file) {
   const pid = /^\d+$/.test(text) ? Number(text) : NaN;
   const id = `${st.ino}:${st.mtimeMs}:${text}`;
   if (Number.isInteger(pid) && pid > 0) return { pid, id, held: pid === process.pid || ownerAlive(pid) };
-  return { pid: NaN, id, held: Date.now() - st.mtimeMs < INIT_GRACE_MS };
+  return { pid: NaN, id, held: Date.now() - st.mtimeMs < DEBRIS_GRACE_MS };
 }
 
 // Reclaim tokens: `run.lock.reclaim-<hash of the stale file's identity>` directories. mkdir is atomic, so exactly one
@@ -44,21 +45,34 @@ function sweepTokens(dir) {
   }
 }
 
-/** Take the lock now or return null. Returns a release function. */
-export function tryRunLock(vault) {
+/** Publish our lock atomically: link() fails with EEXIST when a lock exists, and the linked file already holds our pid. */
+function publish(vault, file) {
+  const tmpFile = atticWritePath(vault, `${REL}.tmp-${process.pid}-${randomUUID()}`);
+  const fd = fs.openSync(tmpFile, 'wx');
+  try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+  try { fs.linkSync(tmpFile, file); return true; }
+  catch (e) { if (e.code === 'EEXIST') return false; throw e; }
+  finally { try { fs.unlinkSync(tmpFile); } catch { /* gone */ } }
+}
+
+/**
+ * Take the lock now or return null. Returns a release function.
+ * `hooks.afterInspect` (tests only) runs between inspecting a stale lock and claiming its reclaim token, to interleave
+ * another contender exactly where a real one could be paused.
+ */
+export function tryRunLock(vault, hooks = {}) {
   atticMkdir(vault, DIR);
   const file = atticWritePath(vault, REL);
   const dir = path.dirname(file);
   for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const fd = fs.openSync(file, 'wx');
-      try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+    if (publish(vault, file)) {
       sweepTokens(dir);
       return () => { try { if (fs.readFileSync(file, 'utf8').trim() === String(process.pid)) fs.unlinkSync(file); } catch { /* gone */ } };
-    } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    }
     const seen = inspect(file);
     if (!seen) continue; // released meanwhile
     if (seen.held) return null;
+    hooks.afterInspect?.();
     // Stale (the owner died): claim the right to reclaim this exact file first.
     const token = path.join(dir, TOKEN_PREFIX + createHash('sha256').update(seen.id).digest('hex').slice(0, 32));
     try { fs.mkdirSync(token); } catch (e) { if (e.code === 'EEXIST') return null; throw e; } // someone else reclaims it

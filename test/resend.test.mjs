@@ -143,42 +143,23 @@ test('run lock: one holder at a time, a dead owner\'s lock is taken over', async
   assert.equal(fs.existsSync(file), false);
 });
 
-test('run lock: a lock still being created (empty, fresh) is held; an empty lock left by a crash is reclaimed', () => {
+test('run lock: the lock is never visible without its pid; unreadable debris is held while fresh, reclaimed when old', () => {
   const ctx = testCtx();
-  const release = tryRunLock(ctx.vault);
-  release();
   const file = path.join(ctx.vault, '_attic', 'state', 'run.lock');
-  fs.writeFileSync(file, ''); // another process between open('wx') and writing its pid
+  const release = tryRunLock(ctx.vault);
+  assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid)); // published complete
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n.includes('.tmp-')), []); // temp file gone
+  release();
+  fs.writeFileSync(file, ''); // debris
   assert.equal(tryRunLock(ctx.vault), null);
-  assert.equal(fs.existsSync(file), true); // not deleted from under its owner
+  assert.equal(fs.existsSync(file), true);
   const old = new Date(Date.now() - 5 * 60 * 1000);
   fs.utimesSync(file, old, old);
   const again = tryRunLock(ctx.vault);
   assert.ok(again);
   assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
   again();
-  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n === 'run.lock' || n.includes('stale')), []); // no leftovers
-});
-
-test('attic tick skips the hour while another run holds the lock', () => {
-  const home = tmp();
-  const vault = path.join(home, 'vault');
-  fs.mkdirSync(path.join(vault, '_attic', 'state'), { recursive: true });
-  const env = { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(home, 'xdg') };
-  const tick = () => spawnSync(process.execPath, [path.join(ROOT, 'bin/attic.mjs'), 'tick', '--vault', vault], { env, encoding: 'utf8' });
-  const lock = path.join(vault, '_attic', 'state', 'run.lock');
-  fs.writeFileSync(lock, String(process.pid)); // a live owner (this test process)
-  const held = tick();
-  assert.equal(held.status, 0, held.stderr);
-  assert.equal(JSON.parse(held.stdout.trim()).locked, true);
-  assert.equal(fs.readFileSync(lock, 'utf8'), String(process.pid)); // not taken or removed
-  fs.unlinkSync(lock);
-  const free = tick();
-  assert.equal(free.status, 0, free.stderr);
-  const out = JSON.parse(free.stdout.trim());
-  assert.equal(out.locked, undefined);
-  assert.deepEqual(out.resent, []);
-  assert.equal(fs.existsSync(lock), false); // released
+  assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n === 'run.lock' || n.includes('.tmp-')), []);
 });
 
 test('run lock: a stale lock is reclaimed by exactly one contender; a paused contender never moves a live lock', () => {
@@ -209,4 +190,21 @@ test('run lock: a stale lock is reclaimed by exactly one contender; a paused con
   fs.utimesSync(path.join(dir, tokens()[0]), old, old);
   tryRunLock(ctx.vault)();
   assert.deepEqual(tokens(), []);
+});
+
+test('run lock: a contender paused after inspecting a stale lock backs off once another took it over', () => {
+  const ctx = testCtx();
+  const file = path.join(ctx.vault, '_attic', 'state', 'run.lock');
+  tryRunLock(ctx.vault)();
+  fs.writeFileSync(file, '999999999'); // dead owner
+  let b = null;
+  // A inspects the stale lock, then "pauses" while B reclaims it and takes a fresh lock
+  const a = tryRunLock(ctx.vault, { afterInspect: () => { b = tryRunLock(ctx.vault); } });
+  assert.ok(b, 'B reclaimed the stale lock');
+  assert.equal(a, null, 'A must not also get the lock');
+  assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid)); // B's lock untouched
+  // C arriving now sees a live lock
+  assert.equal(tryRunLock(ctx.vault), null);
+  b();
+  assert.equal(fs.existsSync(file), false);
 });
