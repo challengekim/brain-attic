@@ -113,7 +113,9 @@ async function main(argv) {
     }
     case 'review': {
       const { review } = await import('../src/review.mjs');
-      const r = await review(ctx, { dryRun: !!args['dry-run'], week: args.week, fresh: !!args.fresh });
+      const { withRunLock } = await import('../src/runlock.mjs');
+      const runReview = () => review(ctx, { dryRun: !!args['dry-run'], week: args.week, fresh: !!args.fresh });
+      const r = args['dry-run'] ? await runReview() : await withRunLock(requireVault(ctx), runReview);
       if (args.json) printJson(r);
       else console.log(`시트: ${r.sheetFile}\n분류: a ${r.counts.a} / b ${r.counts.b} / c ${r.counts.c} / d ${r.counts.d ?? 0} / 미분류 ${r.counts.unclassified}\n제안 ${r.proposals.length}건${r.dryRun ? ' (dry-run: 저장·발송 안 함)' : ''}`);
       return 0;
@@ -162,8 +164,8 @@ async function main(argv) {
     case 'sync': {
       const { syncAll } = await import('../src/notify/index.mjs');
       const { expireStale } = await import('../src/proposals.mjs');
-      requireVault(ctx);
-      const res = await syncAll(ctx);
+      const { withRunLock } = await import('../src/runlock.mjs');
+      const res = await withRunLock(requireVault(ctx), () => syncAll(ctx));
       // A failed pull may hide an on-time answer: expire only after every adapter answered.
       if (res.every((r) => r.ok !== false)) expireStale(ctx.vault);
       if (!res.length) console.log('양방향 어댑터(decision-api, github-issues)가 설정돼 있지 않습니다');
@@ -172,7 +174,8 @@ async function main(argv) {
     }
     case 'apply': {
       const { apply } = await import('../src/apply.mjs');
-      const r = await apply(ctx);
+      const { withRunLock } = await import('../src/runlock.mjs');
+      const r = await withRunLock(requireVault(ctx), () => apply(ctx));
       console.log(`적용 ${r.applied.length}건, 프롬프트 파일 ${r.prompts.length}건, 오류 ${r.errors.length}건`);
       for (const p of r.prompts) console.log(`  - ${p.file}`);
       for (const e of r.errors) console.log(`  ! ${e.id}: ${e.error}`);
@@ -181,10 +184,12 @@ async function main(argv) {
     case 'tick': {
       const { syncAll, resendUnsent } = await import('../src/notify/index.mjs');
       const { apply } = await import('../src/apply.mjs');
-      requireVault(ctx);
-      const resent = await resendUnsent(ctx);
-      const res = await syncAll(ctx);
-      const r = await apply(ctx);
+      const { tryRunLock } = await import('../src/runlock.mjs');
+      // Another run (review, retro, ...) is changing proposals: skip this hour instead of racing it; the next tick catches up.
+      const release = tryRunLock(requireVault(ctx));
+      if (!release) { console.log(JSON.stringify({ at: new Date().toISOString(), locked: true, note: '다른 실행이 잠금을 쥐고 있어 이번 시간은 건너뜀' })); return 0; }
+      let resent, res, r;
+      try { resent = await resendUnsent(ctx); res = await syncAll(ctx); r = await apply(ctx); } finally { release(); }
       console.log(JSON.stringify({ at: new Date().toISOString(), sync: res.map((x) => ({ type: x.type, ok: x.ok !== false, changed: x.changed?.length ?? 0, ...(x.error ? { error: x.error } : {}) })),
         applied: r.applied.map((x) => x.id), prompts: r.prompts.map((x) => x.id), skipped: r.skipped.length, errors: r.errors,
         resent: resent.map((x) => ({ type: x.type, ok: x.ok !== false, sent: x.sent ?? 0, ...(x.error ? { error: x.error } : {}) })) }));
@@ -209,7 +214,9 @@ async function main(argv) {
     }
     case 'retro': {
       const { retro } = await import('../src/retro.mjs');
-      const r = await retro(ctx, { month: args.month, dryRun: !!args['dry-run'] });
+      const { withRunLock } = await import('../src/runlock.mjs');
+      const runRetro = () => retro(ctx, { month: args.month, dryRun: !!args['dry-run'] });
+      const r = args['dry-run'] ? await runRetro() : await withRunLock(requireVault(ctx), runRetro);
       console.log(`회고: ${r.file}\n제안 ${r.proposals.length}건`);
       return 0;
     }
