@@ -6,6 +6,7 @@
 // consulted: GitHub does not tell us who applied a label.
 import { run, which } from '../util.mjs';
 import { decide, getProposal, listProposals, saveProposal } from '../proposals.mjs';
+import { freshPending, recordSent } from './record.mjs';
 
 const KEY = 'github-issues';
 const gh = (ctx, args, input) => run('gh', args, { env: ctx.env, timeoutMs: 60000, input });
@@ -24,6 +25,9 @@ function approversFor(cfg) {
   return Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.filter((u) => typeof u === 'string' && u.trim()).map((u) => u.trim().toLowerCase()) : [];
 }
 
+/** Already published through this adapter (an issue exists). */
+export const isPublished = (p) => Boolean(p.external?.[KEY]?.number);
+
 export async function publish(ctx, cfg, proposals) {
   needGh(ctx, cfg);
   let approvers = approversFor(cfg);
@@ -36,16 +40,19 @@ export async function publish(ctx, cfg, proposals) {
   await gh(ctx, ['label', 'create', 'attic-proposal', '--repo', cfg.repo, '--force', '--color', 'BFD4F2']);
   await gh(ctx, ['label', 'create', 'attic-applied', '--repo', cfg.repo, '--force', '--color', '0E8A16']);
   let sent = 0;
-  for (const p of proposals) {
-    if (p.external?.[KEY]?.number) continue;
+  for (const given of proposals) {
+    // The caller's copy may be stale (answered, withdrawn or reclassified since it was read): send what is on disk now.
+    const p = freshPending(ctx.vault, given);
+    if (!p || isPublished(p)) continue;
     const body = [p.summary.join('\n'), '', `id: \`${p.id}\` · kind: ${p.kind} · 만료: ${p.expiresAt.slice(0, 10)}`,
       '', '승인하려면 코멘트로 `approve`, 거절하려면 `reject` 라고 남기세요.'].join('\n');
     const r = await gh(ctx, ['issue', 'create', '--repo', cfg.repo, '--title', `[attic] ${p.summary[0].slice(0, 120)}`, '--body', body, '--label', 'attic-proposal']);
     if (r.code !== 0) throw new Error(`gh issue create 실패: ${r.stderr.trim().slice(0, 200)}`);
     const m = /\/issues\/(\d+)/.exec(r.stdout);
     if (!m) throw new Error('이슈 번호를 읽지 못했습니다');
-    p.external = { ...p.external, [KEY]: { number: Number(m[1]), repo: cfg.repo, approvers } };
-    saveProposal(ctx.vault, p);
+    const record = { number: Number(m[1]), repo: cfg.repo, approvers };
+    given.external = { ...given.external, [KEY]: record };
+    recordSent(ctx.vault, p, KEY, record);
     sent++;
   }
   return { ok: true, sent };

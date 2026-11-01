@@ -8,6 +8,7 @@
 //   PATCH {changeIds:[...], kind}  -> ack. ONLY ids that exist in OUR local store AND were published by THIS adapter
 //   (external['decision-api'].sentAt) are accepted/acked; every other id is ignored and left alone.
 import { decide, getProposal, isAutoApplicable, reclassify, saveProposal, summaryLines } from '../proposals.mjs';
+import { freshPending, recordSent } from './record.mjs';
 import { http, needSecret } from './http.mjs';
 
 const endpoint = (cfg) => `${String(cfg.baseUrl).replace(/\/+$/, '')}/api/agent-decisions/sync`;
@@ -20,16 +21,22 @@ export function unwrapAnswers(body) {
   return Array.isArray(d?.answers) ? d.answers : [];
 }
 
+/** Already published through this adapter (the app has this card). */
+export const isPublished = (p) => Boolean(p.external?.['decision-api']?.sentAt);
+
 export async function publish(ctx, cfg, proposals) {
   const headers = auth(ctx, cfg);
   let sent = 0;
-  for (const p of proposals) {
-    if (p.external?.['decision-api']?.sentAt) continue; // already sent: same id is idempotent anyway
+  for (const given of proposals) {
+    // The caller's copy may be stale (answered, withdrawn or reclassified since it was read): send what is on disk now.
+    const p = freshPending(ctx.vault, given);
+    if (!p || isPublished(p)) continue; // already sent: same id is idempotent anyway
     const changeId = changeIdOf(p);
     const offer = reclassifyOffer(p);
     await http(ctx, endpoint(cfg), { method: 'POST', headers, json: { changeId, kind: kindOf(cfg), summary: summaryLines(p), payload: { ...p.payload, proposalKind: p.kind }, ...(offer ? { reclassify: offer } : {}) } });
-    p.external = { ...p.external, 'decision-api': { sentAt: new Date().toISOString(), changeId } };
-    saveProposal(ctx.vault, p);
+    const record = { sentAt: new Date().toISOString(), changeId };
+    given.external = { ...given.external, 'decision-api': record };
+    recordSent(ctx.vault, p, 'decision-api', record);
     sent++;
   }
   return { ok: true, sent };

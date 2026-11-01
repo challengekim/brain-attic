@@ -87,7 +87,7 @@ attic teach --next             # 승인한 c 를 하나 골라 내가 설명해 
 | `attic withdraw <id...> [--reason <글>]` | 대기 중인 제안을 **철회**합니다(`withdrawn`). 적용되지 않고, 7일이 지나도 자동 적용되지 않으며, 회고 승인율에도 들어가지 않습니다. 같은 주에 `attic review` 를 다시 돌리면, 새 분류와 안 맞는 앞 실행의 분류 제안과 문구만 바뀐 중복은 review 가 알아서 철회합니다. |
 | `attic sync` | 양방향 어댑터(decision-api, github-issues)에서 답을 가져옵니다. **로컬에 있는 id 만** ack 합니다. |
 | `attic apply` | 승인된 제안만 처리합니다. `add_source`, `remove_source`, `set_triage_budget`, `queue_teach` 는 config/파일을 직접 고치고, `try_in_project`(해 볼 것)는 지시문을 쓰고 `config.todo` 가 있으면 할일을 **하나** 만듭니다(«프로젝트에서 해 보기» 참고). 그 밖은 사람이 `claude -p` 로 돌릴 수 있는 지시문 `_attic/approved/<id>.prompt.md` 만 만듭니다. |
-| `attic tick` | `sync` 다음 `apply` 를 한 번 돌립니다(만료는 안 함). 매시 20분에 예약돼 있어, 앱에서 누른 답이 1시간 안에 반영됩니다. |
+| `attic tick` | 알림 때 앱이 꺼져 있거나 오프라인이라 못 보낸 대기 카드를 양방향 어댑터로 다시 보내고, `sync` 다음 `apply` 를 한 번 돌립니다(만료는 안 함). 매시 20분에 예약돼 있어, 못 보낸 카드가 다음 주간 리뷰까지 기다리지 않고 앱에서 누른 답이 1시간 안에 반영됩니다. review·retro·sync·apply 가 돌고 있으면(볼트 실행 잠금 `_attic/state/run.lock`) 그 시간은 건너뜁니다. |
 | `attic todo [status]` / `attic todo resolve <id> --delivered\|--retry` | 결과를 알 수 없는 할일 배달(시간 초과, 예상 밖 종료, 도중 중단)을 보여 줍니다. 할일 앱에서 `attic:<id>` 를 찾아보고 있으면 `--delivered`(닫기), 없으면 `--retry`(다음 apply 가 다시 만든다). |
 | `attic retro [--month YYYY-MM] [--dry-run]` | 월간 자기평가입니다. 출처별 항목 수, a/b/c/d 비율, 승인율, teach 노트 수와 평균 점수를 계산하고, 90일간 a/c 가 0 인 출처는 `remove_source`, 승인율 30% 미만 범주는 기준 조정을 **제안**합니다(같은 승인 절차). |
 | `attic schedule install\|uninstall\|status [--dry-run]` | collect 매일 08:00, radar 매일 09:10, review 월요일 08:30, retro 매월 1일 09:00, tick 매시 20분. macOS 는 LaunchAgents(`com.brain-attic.<job>.plist`), Linux 는 마커 주석으로 감싼 crontab 블록(멱등)을 씁니다. |
