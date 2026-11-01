@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testCtx, startServer } from './helpers.mjs';
 import { createProposal, getProposal, withdraw } from '../src/proposals.mjs';
-import { dispatch, resendUnsent } from '../src/notify/index.mjs';
+import { dispatch, resendUnsent, RESEND_GRACE_MS } from '../src/notify/index.mjs';
+
+const later = () => new Date(Date.now() + RESEND_GRACE_MS + 1000);
 
 // A card that could not reach the app (down, offline) must not wait for the next weekly review: the hourly tick re-sends it.
 
@@ -36,19 +38,26 @@ test('a card whose send failed is re-sent by the next tick, exactly once', async
   assert.equal(getProposal(ctx.vault, a.id).external?.['decision-api'], undefined);
   assert.ok(getProposal(ctx.vault, a.id).offeredAt);
 
+  // the dispatch may still be running in another process: not raced inside the grace period
+  s.state.fail = false;
+  s.log.length = 0;
+  assert.deepEqual(await resendUnsent(ctx), []);
+  assert.equal(s.log.length, 0);
+  s.state.fail = true;
+
   // still down: the retry fails quietly and keeps the cards unsent
-  const down = await resendUnsent(ctx);
+  const down = await resendUnsent(ctx, later());
   assert.equal(down[0].ok, false);
 
   s.state.fail = false;
   s.log.length = 0;
-  const up = await resendUnsent(ctx);
+  const up = await resendUnsent(ctx, later());
   assert.deepEqual(up.map((x) => [x.type, x.sent]), [['decision-api', 2]]);
   assert.deepEqual(posts(s).sort(), [a.id, b.id].sort());
   assert.ok(getProposal(ctx.vault, b.id).external['decision-api'].sentAt);
 
   s.log.length = 0;
-  assert.deepEqual(await resendUnsent(ctx), []);
+  assert.deepEqual(await resendUnsent(ctx, later()), []);
   assert.equal(s.log.length, 0);
   await s.close();
 });
@@ -70,7 +79,7 @@ test('only offered, pending, unexpired cards are re-sent', async () => {
   const late = new Date(Date.parse(getProposal(ctx.vault, live.id).expiresAt) + 1000);
   assert.deepEqual(await resendUnsent(ctx, late), []);
   assert.equal(s.log.length, 0);
-  const r = await resendUnsent(ctx);
+  const r = await resendUnsent(ctx, later());
   assert.equal(r[0].sent, 1);
   assert.deepEqual(posts(s), [live.id]);
   await s.close();
@@ -82,7 +91,7 @@ test('a successful dispatch leaves nothing to re-send', async () => {
   const a = retroCard(ctx, 'try');
   await dispatch(ctx, { title: 'retro', text: 'x' }, [a]);
   s.log.length = 0;
-  assert.deepEqual(await resendUnsent(ctx), []);
+  assert.deepEqual(await resendUnsent(ctx, later()), []);
   assert.equal(s.log.length, 0);
   await s.close();
 });

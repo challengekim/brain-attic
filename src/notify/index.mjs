@@ -36,13 +36,17 @@ export async function syncAll(ctx) {
   return out;
 }
 
+export const RESEND_GRACE_MS = 10 * 60 * 1000;
+
 /**
- * Hourly retry: pending proposals that were offered (passed to `dispatch`) but that a two-way adapter has not published yet.
+ * Hourly retry: pending proposals that were offered (passed to `dispatch`) at least RESEND_GRACE_MS ago but that a two-way adapter has not published yet.
  * Only offered ones, so a card a review run is still building or deduplicating is never sent early. Never throws.
  */
 export async function resendUnsent(ctx, now = new Date()) {
+  // Grace period: a dispatch still running in another process (review/retro) is not raced, so no duplicate GitHub issue.
+  const settled = now.getTime() - RESEND_GRACE_MS;
   const offered = listProposals(ctx.vault, { status: 'pending' })
-    .filter((p) => p.offeredAt && !(Date.parse(p.expiresAt) <= now.getTime()));
+    .filter((p) => p.offeredAt && Date.parse(p.offeredAt) <= settled && !(Date.parse(p.expiresAt) <= now.getTime()));
   const out = [];
   for (const cfg of ctx.config.notifiers || []) {
     const a = twoWay[cfg.type];
