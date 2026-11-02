@@ -59,13 +59,14 @@ test('gatherItems: description is the summary, my_relevance/applicable_when go t
   assert.equal(relevanceOf({}), '');
 });
 
-test('normalizeItem: try needs a project, next and check; otherwise it is learn (nothing is filled in)', () => {
-  const ok = normalizeItem({ id: 'i1', class: 'c', minutes: 20, action: 'try', project: 'casebook', next: '세션 한정으로 붙인다', check: '토큰 비교', reason: 'r' }, PROJECTS);
-  assert.deepEqual([ok.action, ok.project, ok.next, ok.check], ['try', 'casebook', '세션 한정으로 붙인다', '토큰 비교']);
-  for (const miss of [{ project: null }, { next: '' }, { check: '   ' }, { project: 'nope' }]) {
-    const n = normalizeItem({ id: 'i1', class: 'c', minutes: 20, action: 'try', project: 'casebook', next: 'n', check: 'c', reason: 'r', ...miss }, PROJECTS);
+test('normalizeItem: try needs a project, its sore problem (pain), next and check; otherwise it is learn (nothing is filled in)', () => {
+  const ok = normalizeItem({ id: 'i1', class: 'c', minutes: 20, action: 'try', project: 'casebook', pain: '탐색 토큰이 세션마다 30% 넘게 샌다', next: '세션 한정으로 붙인다', check: '토큰 비교', reason: 'r' }, PROJECTS);
+  assert.deepEqual([ok.action, ok.project, ok.pain, ok.next, ok.check], ['try', 'casebook', '탐색 토큰이 세션마다 30% 넘게 샌다', '세션 한정으로 붙인다', '토큰 비교']);
+  for (const miss of [{ project: null }, { next: '' }, { check: '   ' }, { project: 'nope' }, { pain: undefined }, { pain: '  ' }]) {
+    const n = normalizeItem({ id: 'i1', class: 'c', minutes: 20, action: 'try', project: 'casebook', pain: 'p', next: 'n', check: 'c', reason: 'r', ...miss }, PROJECTS);
     assert.equal(n.action, 'learn', JSON.stringify(miss));
     assert.equal(n.next, undefined);
+    assert.equal(n.pain, undefined);
   }
   assert.equal(normalizeItem({ id: 'i1', class: 'c', minutes: 20, reason: 'r' }, PROJECTS).action, 'learn');
   assert.equal(normalizeItem({ id: 'i1', class: 'a', reason: 'r', action: 'try' }, PROJECTS).action, undefined);
@@ -272,6 +273,25 @@ test('review with a failed sync expires nothing (an on-time answer may be waitin
   assert.equal(getProposal(ctx.vault, p.id).status, 'pending');
 });
 
+test('try cap: two or three a week (owner decision 2026-11-03), and the card, sheet, prompt and task carry the pain', () => {
+  assert.equal(MAX_TRY, 3);
+  const items = Array.from({ length: 6 }, (_, n) => tryItem(`T${n}`, { priority: 2, pain: `막힌 곳 ${n}` }));
+  const used = buildDescriptors({ items }, aud, { try_in_project: 2 }).filter((d) => d.payload.op === 'try_in_project');
+  assert.equal(used.length, 1, 'cards already made this week count against the cap');
+  const cards = buildDescriptors({ items }, aud).filter((d) => d.payload.op === 'try_in_project');
+  assert.equal(cards.length, 3);
+  assert.equal(cards[0].payload.pain, '막힌 곳 0');
+  assert.equal(cards[0].summary[1], '근거: 막힌 곳 0');
+  const sheet = renderSheet({ vault: '/v', week: 'W', tri: { counts: { a: 0, b: 0, c: items.length, d: 0, unclassified: 0 }, usedMinutes: 0, weeklyMinutes: null, errors: [], items }, aud, events: [], descriptors: [], dryRun: true, nowIso: 'now' });
+  assert.match(sheet, /- 근거: 막힌 곳 0/);
+  assert.match(sheet, /그 밖의 후보 3건/);
+  const p = { id: 'attic-000000000000', decidedAt: '2026-10-08T00:00:00Z', payload: cards[0].payload };
+  assert.match(renderTodoArgv({ argv: ['todo', '{body}'], dueDays: 3 }, p, { now: NOW })[1], /^근거: 막힌 곳 0\n다음 행동:/);
+  // an older card without pain still renders (no empty line)
+  const old = buildDescriptors({ items: [tryItem('OLD')] }, aud)[0];
+  assert.equal(old.summary[1].startsWith('다음 행동:'), true);
+});
+
 test('try ranking: priority first, then notes saved with a judgement, then usage, then shorter; the cap keeps the top', () => {
   const items = [
     tryItem('LOW', { priority: 3, minutes: 5 }),
@@ -283,7 +303,7 @@ test('try ranking: priority first, then notes saved with a judgement, then usage
   const picked = buildDescriptors({ items }, aud).filter((d) => d.payload.op === 'try_in_project').map((d) => d.payload.title);
   assert.deepEqual(picked.slice(0, 3), ['TOP', 'SAVED', 'MID']);
   assert.equal(picked.length, MAX_TRY);
-  assert.equal(normalizeItem({ id: 'i', class: 'c', minutes: 5, action: 'try', project: 'casebook', next: 'n', check: 'c', reason: 'r', priority: 9 }, PROJECTS).priority, 3, 'invalid -> lowest');
+  assert.equal(normalizeItem({ id: 'i', class: 'c', minutes: 5, action: 'try', project: 'casebook', pain: 'p', next: 'n', check: 'c', reason: 'r', priority: 9 }, PROJECTS).priority, 3, 'invalid -> lowest');
   const sheet = renderSheet({ vault: '/v', week: 'W', tri: { counts: { a: 0, b: 0, c: items.length, d: 0, unclassified: 0 }, usedMinutes: 0, weeklyMinutes: null, errors: [], items }, aud, events: [], descriptors: [], dryRun: true, nowIso: 'now' });
   assert.match(sheet, /1\. \[TOP\]/);
   assert.match(sheet, /가장 먼저/);

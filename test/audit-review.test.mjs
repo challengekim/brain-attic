@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { testCtx, fakeLlmEnv, tmp } from './helpers.mjs';
+import { testCtx, fakeLlmEnv, tmp, startServer } from './helpers.mjs';
 import { scanText, scanDir, suggest, audit } from '../src/audit.mjs';
 import { review, retireStaleImprove } from '../src/review.mjs';
-import { createProposal, decide, getProposal, listProposals } from '../src/proposals.mjs';
+import { createProposal, decide, getProposal, listProposals, saveProposal } from '../src/proposals.mjs';
 import { atticPath, ensureSkeleton } from '../src/vault.mjs';
 import { writeJson } from '../src/util.mjs';
 
@@ -125,7 +125,7 @@ test('an audit path that is itself a skill is one unit', () => {
 test('review: a newer card for the same skill and capability replaces the pending older one; an answered one stays', async () => {
   const root = path.join(tmp('skills-root-'), 'skills');
   write(root, 'thumb/SKILL.md', '---\nname: thumb\ndescription: image\n---\n');
-  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
+  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { review: { improve: true }, audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
   ensureSkeleton(ctx.vault);
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
@@ -149,6 +149,54 @@ test('review: a newer card for the same skill and capability replaces the pendin
   await review(ctx, { now });
   assert.equal(getProposal(ctx.vault, live[0].id).status, 'rejected');
   assert.equal(improve().filter((p) => p.status === 'pending').length, 1);
+});
+
+test('review: improve cards are off by default -- none is made, pending ones are withdrawn, answered ones stay, the sheet only counts', async () => {
+  const root = path.join(tmp('skills-root-'), 'skills');
+  write(root, 'thumb/SKILL.md', '---\nname: thumb\ndescription: image\n---\n');
+  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
+  ensureSkeleton(ctx.vault);
+  const now = new Date();
+  writeJson(atticPath(ctx.vault, 'radar', 'events.json'), [{ ...imgEvent, date: now.toISOString().slice(0, 10) }]);
+  const card = (n) => ({ kind: 'improve', summary: [`old improve ${n}`], payload: { op: 'improve_candidate', file: `skills/s${n}`, files: [`skills/s${n}/SKILL.md`], capability: 'image' } });
+  const pending = createProposal(ctx.vault, card(1), now).proposal;
+  const answered = createProposal(ctx.vault, card(2), now).proposal;
+  decide(ctx.vault, answered.id, 'rejected', { by: 'cli' });
+  const r = await review(ctx, { now });
+  assert.equal(listProposals(ctx.vault).filter((p) => p.payload.op === 'improve_candidate' && p.id !== pending.id && p.id !== answered.id).length, 0, 'no new improve card');
+  assert.equal(getProposal(ctx.vault, pending.id).status, 'withdrawn');
+  assert.match(getProposal(ctx.vault, pending.id).withdrawReason || JSON.stringify(getProposal(ctx.vault, pending.id)), /review\.improve/);
+  assert.ok(r.withdrawn.includes(pending.id));
+  assert.equal(getProposal(ctx.vault, answered.id).status, 'rejected');
+  assert.equal(r.suggestions, 1, 'audit still runs');
+  const sheet = fs.readFileSync(r.sheetFile, 'utf8');
+  assert.match(sheet, /개선 후보 카드는 꺼져 있습니다\(`review\.improve`\)\. 이번 주 후보 1건/);
+  assert.doesNotMatch(sheet, /\(improve\)/);
+});
+
+test('review: with improve off, a failed pull withdraws no improve card -- an answer given in the app is applied once the pull works', async () => {
+  const now = new Date();
+  let fail = true, answers = [];
+  const s = await startServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (fail) { res.statusCode = 500; return res.end('{}'); }
+    res.end(JSON.stringify(req.method === 'GET' ? { answers } : {}));
+  });
+  try {
+    const ctx = testCtx({ env: { ...fakeLlmEnv('allc'), ATTIC_TEST_TOKEN: 't' }, config: { triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 },
+      notifiers: [{ type: 'decision-api', baseUrl: s.url, tokenEnv: 'ATTIC_TEST_TOKEN', kind: 'knowledge' }] } });
+    ensureSkeleton(ctx.vault);
+    const p = createProposal(ctx.vault, { kind: 'improve', summary: ['answered in the app'], payload: { op: 'improve_candidate', file: 'skills/a', files: ['skills/a/SKILL.md'], capability: 'image' } }, now).proposal;
+    p.external = { 'decision-api': { sentAt: new Date(now.getTime() - 3600e3).toISOString(), changeId: p.id } };
+    saveProposal(ctx.vault, p);
+    const r1 = await review(ctx, { now });
+    assert.equal(getProposal(ctx.vault, p.id).status, 'pending', 'not withdrawn while the pull fails');
+    assert.ok(!r1.withdrawn.includes(p.id));
+    fail = false;
+    answers = [{ changeId: p.id, kind: 'knowledge', approved: true, answeredAt: new Date(now.getTime() - 60e3).toISOString() }];
+    await review(ctx, { now });
+    assert.equal(getProposal(ctx.vault, p.id).status, 'approved', 'the app answer wins over the withdrawal');
+  } finally { await s.close(); }
 });
 
 test('audit.exclude drops prefixes as suggestions show them', async () => {
