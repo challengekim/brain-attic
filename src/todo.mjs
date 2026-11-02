@@ -45,7 +45,7 @@ export function tryPrompt(p) {
   return [
     `# 해 볼 것 — ${x.title} (${x.project})`, '',
     `> attic 제안 ${p.id}. 사람이 승인했고, 아직 실행되지 않았습니다.`, '',
-    '## 무엇을', `- 다음 행동: ${x.next}`, `- 판정: ${x.check}`, `- 이유: ${x.reason || ''}`, `- 원문: ${source}`, '',
+    '## 무엇을', ...(x.pain ? [`- 근거: ${x.pain}`] : []), `- 다음 행동: ${x.next}`, `- 판정: ${x.check}`, `- 이유: ${x.reason || ''}`, `- 원문: ${source}`, '',
     '## 진행 규칙',
     `- ${x.project} 에서만, 되돌리기 쉬운 범위로 시도합니다(그 세션에만 붙이는 설정·별도 브랜치). 전역 설정 변경이나 상시 등록은 하지 않습니다.`,
     '- 시도하기 전에 «판정» 에 쓸 값을 먼저 잽니다(전). 시도한 뒤 같은 방법으로 다시 잽니다(후).',
@@ -70,7 +70,7 @@ export function renderTodoArgv(cfg, p, { vault, now = new Date() } = {}) {
   const values = {
     title: truncate(`[attic] ${x.project}: ${x.title}`.replace(/\s+/g, ' '), 120),
     body: [
-      `다음 행동: ${x.next}`, `판정: ${x.check}`, x.reason ? `이유: ${x.reason}` : '',
+      x.pain ? `근거: ${x.pain}` : '', `다음 행동: ${x.next}`, `판정: ${x.check}`, x.reason ? `이유: ${x.reason}` : '',
       `원문: ${x.url || (x.file ? x.file : '(없음)')}`,
       vault ? `지시문: ${atticPath(vault, promptRel(p.id))}` : '',
       `attic:${p.id}`,

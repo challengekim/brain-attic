@@ -14,8 +14,11 @@ import { dispatch } from './notify/index.mjs';
 import { savedDir } from './save.mjs';
 
 const MAX_TEACH = 8;
-/** try = "try this in one project, small" -> an outside task once approved. Few and concrete beats many. */
-export const MAX_TRY = 5;
+/**
+ * try = "try this in one project, small" -> an outside task once approved. Few and concrete beats many: the owner's
+ * 2026-11-03 decision (October: 0/15 approved) is two or three a week, each tied to a named sore problem (`pain`).
+ */
+export const MAX_TRY = 3;
 export const SHEET_SKIP_MAX = 10;
 export const SHEET_TRY_DETAIL = MAX_TRY; // the detailed list is exactly what becomes cards
 /** b = "the system should apply this". Each one is a question to a human, so cap them per week. */
@@ -50,6 +53,12 @@ export function triageIsStale(ctx, vault, saved) {
   return false;
 }
 
+/**
+ * improve cards (audit suggestions) are off unless `review.improve: true`. October: 0/10 approved, and the matches paired
+ * unrelated files with new model docs. The sheet still counts them; `attic audit` lists them.
+ */
+export const improveCardsOn = (config) => config?.review?.improve === true;
+
 /** Radar event kinds that mean "a model (or a documented model endpoint) is new". */
 export const NEW_MODEL_KINDS = ['new', 'modality', 'kie_new'];
 export const SYSTEM_REVIEW_LIST = 10;
@@ -80,7 +89,7 @@ export function systemReviewDescriptor(events, aud) {
 
 /** Card lines for a try proposal. The app shows these as they are. */
 export function trySummary(c) {
-  return [`해 볼 것 (${c.project}): ${c.title}`, `다음 행동: ${c.next}`, `판정: ${c.check}`, `이유: ${c.reason}`, `예상 ${c.minutes}분 · 승인하면 할일로 넘어갑니다(할일 연동이 설정된 경우)`];
+  return [`해 볼 것 (${c.project}): ${c.title}`, ...(c.pain ? [`근거: ${c.pain}`] : []), `다음 행동: ${c.next}`, `판정: ${c.check}`, `이유: ${c.reason}`, `예상 ${c.minutes}분 · 승인하면 할일로 넘어갑니다(할일 연동이 설정된 경우)`];
 }
 
 /**
@@ -90,7 +99,7 @@ export function trySummary(c) {
  * never takes a slot: the cap applies only to items without a card, so an existing card cannot starve one that newly needs
  * a card. An answered/applied one is not proposed again.
  */
-export function buildDescriptors(tri, aud, used = {}, events = [], represented = new Map()) {
+export function buildDescriptors(tri, aud, used = {}, events = [], represented = new Map(), { improve = false } = {}) {
   const out = [];
   const sys = used.system_review ? null : systemReviewDescriptor(events, aud);
   if (sys) out.push(sys);
@@ -107,7 +116,7 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
       summary: trySummary(c),
       // Not whitelisted and not auto-applicable: approval writes an instruction file and, when config.todo is set,
       // creates one outside task (see todo.mjs). Silence expires it.
-      payload: { op: 'try_in_project', title: c.title, url: c.url || '', kind: kindOfItem(c), ...(c.file ? { file: c.file } : {}), project: c.project, next: c.next, check: c.check, reason: c.reason, minutes: c.minutes },
+      payload: { op: 'try_in_project', title: c.title, url: c.url || '', kind: kindOfItem(c), ...(c.file ? { file: c.file } : {}), project: c.project, ...(c.pain ? { pain: c.pain } : {}), next: c.next, check: c.check, reason: c.reason, minutes: c.minutes },
     });
   }
   const cs = pick('queue_teach', MAX_TEACH);
@@ -135,7 +144,7 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
       payload: { op: 'archive_note', title: d.title, file: d.file, kind: 'vault' },
     });
   }
-  for (const s of aud.suggestions) {
+  for (const s of improve ? aud.suggestions : []) {
     out.push({
       kind: 'improve',
       summary: [s.text],
@@ -147,16 +156,20 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
 
 /**
  * Improve cards from before audit grouped per skill (one card per file, no `files`) or about a deleted/archived skill
- * (skills/.trash/...): the system takes them back. Only pending ones -- an answered card is the user's.
+ * (skills/.trash/...): the system takes them back. With improve cards off, every pending one goes. Only pending ones --
+ * an answered card is the user's.
  */
-export function retireStaleImprove(vault, now = new Date()) {
-  const stale = (p) => p.payload?.op === 'improve_candidate' && typeof p.payload.file === 'string'
+export function retireStaleImprove(vault, now = new Date(), { improve = true } = {}) {
+  const isImprove = (p) => p.payload?.op === 'improve_candidate';
+  const stale = (p) => isImprove(p) && typeof p.payload.file === 'string'
     && (!Array.isArray(p.payload.files) || p.payload.file.split(/[\\/]/).slice(1, -1).some(isSkippedDir));
-  return listProposals(vault, { status: 'pending' }).filter(stale)
-    .map((p) => withdraw(vault, p.id, { by: 'review', now, reason: '스킬 단위로 묶기 전(파일마다 한 장)이거나 지운 스킬(.trash 등)에 대한 개선 후보 — 철회' }).id);
+  return listProposals(vault, { status: 'pending' }).filter(improve ? stale : isImprove)
+    .map((p) => withdraw(vault, p.id, { by: 'review', now, reason: improve
+      ? '스킬 단위로 묶기 전(파일마다 한 장)이거나 지운 스킬(.trash 등)에 대한 개선 후보 — 철회'
+      : '개선 후보 카드를 끔(review.improve) — 철회' }).id);
 }
 
-export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [] }) {
+export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [], improve = false }) {
   const L = [`# 승인 시트 ${week}`, '', `생성: ${nowIso}${dryRun ? ' (dry-run: 제안 저장·발송 안 함)' : ''}`, ''];
   const linkOf = (r) => {
     const title = r.title.replace(/[\[\]]/g, '');
@@ -167,7 +180,7 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
   L.push('## 이번 주 해 볼 것', '');
   if (!tries.length) L.push('- 없음 — 프로젝트에 바로 시험해 볼 만한 항목이 이번 주에는 없었습니다');
   tries.slice(0, SHEET_TRY_DETAIL).forEach((r, n) => {
-    L.push(`${n + 1}. ${linkOf(r)} — **${r.project}** · 약 ${r.minutes}분${r.priority === 1 ? ' · 가장 먼저' : ''}`, `   - 다음: ${r.next}`, `   - 판정: ${r.check}`, `   - 이유: ${r.reason}`);
+    L.push(`${n + 1}. ${linkOf(r)} — **${r.project}** · 약 ${r.minutes}분${r.priority === 1 ? ' · 가장 먼저' : ''}`, ...(r.pain ? [`   - 근거: ${r.pain}`] : []), `   - 다음: ${r.next}`, `   - 판정: ${r.check}`, `   - 이유: ${r.reason}`);
   });
   if (tries.length > SHEET_TRY_DETAIL) {
     L.push('', `그 밖의 후보 ${tries.length - SHEET_TRY_DETAIL}건 (급하지 않음 — 카드로 보내지 않음):`);
@@ -197,8 +210,9 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
     }
   }
   L.push('', '## 3. 개선 후보 (audit)', '', `- 스캔한 파일 ${aud.scannedFiles}개, 모델 ID ${Object.keys(aud.models).length}종, 도구 ${Object.keys(aud.tools).length}종`);
-  if (!aud.suggestions.length) L.push('- 이번 주 제안 없음');
-  for (const s of aud.suggestions) L.push(`- ${s.text}`);
+  if (!improve) L.push(`- 개선 후보 카드는 꺼져 있습니다(\`review.improve\`). 이번 주 후보 ${aud.suggestions.length}건 — 목록은 \`attic audit\``);
+  else if (!aud.suggestions.length) L.push('- 이번 주 제안 없음');
+  else for (const s of aud.suggestions) L.push(`- ${s.text}`);
   L.push('', '## 4. 이번 실행의 새 제안', '');
   if (!descriptors.length) L.push('- 없음 (이미 올라간 대기 제안은 `attic pending`)');
   for (const d of descriptors) {
@@ -217,6 +231,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
   week = week || isoWeek(now);
+  const improve = improveCardsOn(ctx.config);
   // Remote answers (decision-api / GitHub Issues) are pulled first: silence is only silence once we could ask. A failed pull
   // or a dry-run leaves overdue classification proposals pending instead of applying them.
   let canAuto = !dryRun;
@@ -248,7 +263,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     .map((p) => itemKey(p.payload)));
   const withdrawn = [];
   if (!dryRun) {
-    withdrawn.push(...retireStaleImprove(vault, now));
+    withdrawn.push(...retireStaleImprove(vault, now, { improve }));
     const itemOf = new Map((tri.items || []).map((it) => [itemKey(it), it]));
     for (const p of thisWeekPending()) {
       if (p.userClass) continue;
@@ -275,7 +290,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     const k = `${p.payload.op}\u0000${itemKey(p.payload)}`;
     if (represented.get(k) !== 'done') represented.set(k, p.status === 'pending' ? 'pending' : 'done');
   }
-  const descriptors = buildDescriptors(tri, aud, used, events, represented)
+  const descriptors = buildDescriptors(tri, aud, used, events, represented, { improve })
     .filter((d) => !(OP_CLASS[d.payload?.op] && humanKeys.has(itemKey(d.payload))));
   // Classification suggestions nobody answered for 7 days are applied as recommended (not on --dry-run).
   const auto = canAuto ? await apply(ctx, { now, onlyAuto: true }) : { applied: [], prompts: [], errors: [] };
@@ -284,7 +299,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const autoApplied = autoOk.map((id) => getProposal(vault, id)).filter((p) => p && !p.autoReportedAt); // each one is reported once
   for (const p of autoApplied) saveProposal(vault, { ...p, autoReportedAt: now.toISOString() });
   const autoErrors = auto.errors;
-  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied });
+  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied, improve });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
   if (!dryRun) {

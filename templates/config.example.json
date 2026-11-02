@@ -9,6 +9,7 @@
   "triage": { "include": ["References", "Daily"], "exclude": ["References/Worklog"], "targetRatios": { "a": 0.30, "b": 0.45, "c": 0.05, "d": 0.20 }, "projectPaths": ["~/code/my-app"] },
   "audit": { "paths": ["~/.claude/skills", "~/.claude/scripts"] },
   "radar": { "priceThreshold": 0.2 },
+  "review": { "improve": false },
   "notifiers": [
     { "type": "stdout" },
     { "type": "discord", "webhookEnv": "ATTIC_DISCORD_WEBHOOK" },

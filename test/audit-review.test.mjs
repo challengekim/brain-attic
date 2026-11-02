@@ -125,7 +125,7 @@ test('an audit path that is itself a skill is one unit', () => {
 test('review: a newer card for the same skill and capability replaces the pending older one; an answered one stays', async () => {
   const root = path.join(tmp('skills-root-'), 'skills');
   write(root, 'thumb/SKILL.md', '---\nname: thumb\ndescription: image\n---\n');
-  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
+  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { review: { improve: true }, audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
   ensureSkeleton(ctx.vault);
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
@@ -149,6 +149,29 @@ test('review: a newer card for the same skill and capability replaces the pendin
   await review(ctx, { now });
   assert.equal(getProposal(ctx.vault, live[0].id).status, 'rejected');
   assert.equal(improve().filter((p) => p.status === 'pending').length, 1);
+});
+
+test('review: improve cards are off by default -- none is made, pending ones are withdrawn, answered ones stay, the sheet only counts', async () => {
+  const root = path.join(tmp('skills-root-'), 'skills');
+  write(root, 'thumb/SKILL.md', '---\nname: thumb\ndescription: image\n---\n');
+  const ctx = testCtx({ env: fakeLlmEnv('allc'), config: { audit: { paths: [root] }, triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
+  ensureSkeleton(ctx.vault);
+  const now = new Date();
+  writeJson(atticPath(ctx.vault, 'radar', 'events.json'), [{ ...imgEvent, date: now.toISOString().slice(0, 10) }]);
+  const card = (n) => ({ kind: 'improve', summary: [`old improve ${n}`], payload: { op: 'improve_candidate', file: `skills/s${n}`, files: [`skills/s${n}/SKILL.md`], capability: 'image' } });
+  const pending = createProposal(ctx.vault, card(1), now).proposal;
+  const answered = createProposal(ctx.vault, card(2), now).proposal;
+  decide(ctx.vault, answered.id, 'rejected', { by: 'cli' });
+  const r = await review(ctx, { now });
+  assert.equal(listProposals(ctx.vault).filter((p) => p.payload.op === 'improve_candidate' && p.id !== pending.id && p.id !== answered.id).length, 0, 'no new improve card');
+  assert.equal(getProposal(ctx.vault, pending.id).status, 'withdrawn');
+  assert.match(getProposal(ctx.vault, pending.id).withdrawReason || JSON.stringify(getProposal(ctx.vault, pending.id)), /review\.improve/);
+  assert.ok(r.withdrawn.includes(pending.id));
+  assert.equal(getProposal(ctx.vault, answered.id).status, 'rejected');
+  assert.equal(r.suggestions, 1, 'audit still runs');
+  const sheet = fs.readFileSync(r.sheetFile, 'utf8');
+  assert.match(sheet, /개선 후보 카드는 꺼져 있습니다\(`review\.improve`\)\. 이번 주 후보 1건/);
+  assert.doesNotMatch(sheet, /\(improve\)/);
 });
 
 test('audit.exclude drops prefixes as suggestions show them', async () => {

@@ -16,7 +16,7 @@ export const DEFAULT_RATIOS = { a: 0.30, b: 0.45, c: 0.05, d: 0.20 };
 export const SHEET_LIST_MAX = 15;
 export const CLASSES = ['a', 'b', 'c', 'd', 'unclassified'];
 /** Bump when the triage result shape changes: an older saved result is then re-classified instead of reused. */
-export const TRIAGE_SCHEMA = 2;
+export const TRIAGE_SCHEMA = 3; // 3: try needs `pain` (the project's sore problem it addresses)
 export const NEXT_MAX = 160;
 
 /**
@@ -159,7 +159,8 @@ function buildPrompt(batch, projects, ratios, usage) {
     '- a: 가볍게 읽고 인지만 한다. 존재를 아는 것만으로 쓸모가 있다.',
     '- b: 인지가 필요 없다. 내 시스템(스킬·설정·모델 선택·자동화)에 구체적으로 바꿀 것이 있어서 시스템이 반영하면 된다. reason 에 «무엇을 어떻게 바꾸는지» 를 적는다. 바꿀 것이 없으면(자동 생성 기록, "따로 할 일 없음") b 가 아니라 a 또는 d 다.',
     '- c: 시간을 들일 것. minutes(예상 소요 분, 정수)를 반드시 적고, action 을 고른다:',
-    '    - action "try": 내 프로젝트 하나에서 작게 시험해 볼 도구·방법·기법. project 를 반드시 적고, next(그 프로젝트에서 무엇을 어디까지 작게 해 볼지 한 문장 — 되돌리기 쉬운 범위로)와 check(무엇을 재거나 보면 됐다/안 됐다를 판정하는지 한 문장)를 적는다. 셋 중 하나라도 못 적겠으면 try 가 아니다.',
+    '    - action "try": 내 프로젝트 하나에서 작게 시험해 볼 도구·방법·기법. project 를 반드시 적고, pain(그 프로젝트에서 지금 아픈 문제 — 막힌 곳·반복되는 실패·비용 — 가 무엇이고 이 항목이 그걸 어떻게 푸는지 한 문장. 프로젝트 목록이나 relevance 에 적힌 사실에 근거한다), next(그 프로젝트에서 무엇을 어디까지 작게 해 볼지 한 문장 — 되돌리기 쉬운 범위로)와 check(무엇을 재거나 보면 됐다/안 됐다를 판정하는지 한 문장)를 적는다. 넷 중 하나라도 못 적겠으면 try 가 아니다.',
+    '    - pain 은 근거다: «좋아 보인다», «써 보면 도움이 될 것» 처럼 그 프로젝트의 구체적인 문제를 짚지 못하면 pain 이 아니다 — 그런 항목은 learn 이나 a 로 둔다. try 는 한 주에 두세 건만 카드가 된다.',
     '    - try 에는 priority 도 적는다: 1 = 이번 주에 가장 먼저 할 것(전체에서 1~2개뿐), 2 = 이번 주에 할 만함, 3 = 해 볼 만하지만 급하지 않음. 대부분은 3 이다. 지금 프로젝트의 막힌 곳(프로젝트 목록의 마지막 부분)을 직접 푸는 것만 1·2 를 준다.',
     '    - try 는 아껴 쓴다: 실제로 이번 주에 시간을 낼 가치가 있고 결과를 재서 판정할 수 있는 것만. "써 보면 좋을 것 같은" 소식은 try 가 아니라 a 다.',
     '    - action "learn": 깊게 읽고, 쓰고, 설명해 보며 내 것으로 만들 개념·사례.',
@@ -172,7 +173,7 @@ function buildPrompt(batch, projects, ratios, usage) {
     `기대 비율(참고만): a ${pct(ratios.a)} / b ${pct(ratios.b)} / c ${pct(ratios.c)} / d ${pct(ratios.d)}. 이 비율을 맞추려고 억지로 분류하지 않는다. 항목 하나하나를 기준대로 판단하고, 비율은 한쪽으로 심하게 쏠렸을 때 다시 생각해 보는 눈금으로만 쓴다.`,
     `연결 프로젝트(project)는 아래 목록에서 줄 맨 앞의 이름(첫 « — » 앞)만 그대로 적거나, 붙는 곳이 없으면 null.`,
     '프로젝트 목록:', projects.length ? projects.map((p) => `- ${p}`).join('\n') : '(없음)',
-    `출력 스키마: {"items":[{"id":"입력의 id","class":"a|b|c|d","project":"프로젝트 이름 또는 null","reason":"이유 한 줄","minutes":정수(c 일 때만),"action":"try|learn"(c 일 때만),"next":"try 일 때만","check":"try 일 때만","priority":1|2|3(try 일 때만)}]}`,
+    `출력 스키마: {"items":[{"id":"입력의 id","class":"a|b|c|d","project":"프로젝트 이름 또는 null","reason":"이유 한 줄","minutes":정수(c 일 때만),"action":"try|learn"(c 일 때만),"pain":"try 일 때만","next":"try 일 때만","check":"try 일 때만","priority":1|2|3(try 일 때만)}]}`,
     UNTRUSTED_NOTICE, wrapUntrusted(list),
   ].join('\n');
 }
@@ -194,12 +195,13 @@ export function normalizeItem(raw, projects) {
     const m = Number(raw.minutes);
     if (!Number.isFinite(m) || m <= 0) return null;
     out.minutes = Math.round(m);
-    // try needs all three (a project, a next step, a way to judge it). Missing any -> learn: never fill in what the model left out.
+    // try needs all four (a project, the sore problem there it addresses, a next step, a way to judge it).
+    // Missing any -> learn: never fill in what the model left out.
     const text = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, NEXT_MAX) : '');
-    const next = text(raw.next), check = text(raw.check);
+    const next = text(raw.next), check = text(raw.check), pain = text(raw.pain);
     // priority is a ranking hint only; a missing/invalid one is the lowest (3), never promoted.
     const pr = [1, 2, 3].includes(Number(raw.priority)) ? Number(raw.priority) : 3;
-    if (String(raw.action || '').toLowerCase() === 'try' && out.project && next && check) Object.assign(out, { action: 'try', next, check, priority: pr });
+    if (String(raw.action || '').toLowerCase() === 'try' && out.project && pain && next && check) Object.assign(out, { action: 'try', pain, next, check, priority: pr });
     else out.action = 'learn';
   }
   return out;
@@ -215,7 +217,7 @@ export function applyBudget(items, weeklyMinutes) {
   let demoted = 0;
   for (const it of items) {
     if (it.class === 'c' && !keep.has(it.id)) {
-      it.demotedFrom = 'c'; it.demotedMinutes = it.minutes; delete it.minutes; delete it.action; delete it.next; delete it.check; delete it.priority; it.class = 'a';
+      it.demotedFrom = 'c'; it.demotedMinutes = it.minutes; delete it.minutes; delete it.action; delete it.pain; delete it.next; delete it.check; delete it.priority; it.class = 'a';
       it.reason = `${it.reason} (주간 시간 예산 ${weeklyMinutes}분 초과로 c -> a 강등)`;
       demoted++;
     }
@@ -266,7 +268,7 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
       ...(it.relevance ? { relevance: it.relevance } : {}),
       ...(u && (u.backlinks || u.projects) ? { usage: u } : {}) };
     return c ? { ...base, class: c.class, project: c.project, reason: c.reason, ...(c.minutes ? { minutes: c.minutes } : {}),
-      ...(c.action ? { action: c.action } : {}), ...(c.next ? { next: c.next, check: c.check, priority: c.priority } : {}) }
+      ...(c.action ? { action: c.action } : {}), ...(c.next ? { pain: c.pain, next: c.next, check: c.check, priority: c.priority } : {}) }
       : { ...base, class: 'unclassified', project: null, reason: '분류하지 못함' };
   });
   for (const it of dups) {
@@ -318,7 +320,7 @@ export function renderTriage(t) {
       // Vault notes have no URL: link them as Obsidian wiki links so they open in the vault.
       const link = r.url ? `[${title}](${r.url})` : r.file ? `[[${r.file.replace(/\.md$/, '')}|${title}]]` : title;
       L.push(`- ${link} — ${r.action === 'try' ? '[해 볼 것] ' : ''}${r.reason}${r.project ? ` · 프로젝트: ${r.project}` : ''}${r.minutes ? ` · 약 ${r.minutes}분` : ''}${r.source ? ` · ${r.source}` : ''}`);
-      if (r.next) L.push(`  - 다음: ${r.next}`, `  - 판정: ${r.check}`);
+      if (r.next) L.push(...(r.pain ? [`  - 근거: ${r.pain}`] : []), `  - 다음: ${r.next}`, `  - 판정: ${r.check}`);
     }
     if (shown.length < rows.length) L.push(`- 외 ${rows.length - shown.length}건 (전체는 같은 폴더의 ${t.week}.json)`);
   }

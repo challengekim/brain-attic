@@ -86,7 +86,7 @@ those lines. Edit `config.json` (see below) to add sources, folders to triage, a
 | `attic collect` | Fetch `config.sources`; normalize URLs (utm removed, trailing slash); dedupe through a 60-day ledger `_attic/state/seen.json`; append to the day's inbox. |
 | `attic radar [--json]` | Snapshot OpenRouter `/api/v1/models` and the kie.ai docs index (`llms.txt`); report new models, price moves of 20% or more, new image/audio/video output modalities, newly documented kie.ai models/endpoints. First run = baseline only. Network failure = "skipped", old snapshot kept. |
 | `attic triage [--week YYYY-Www]` | Classify this week's inbox + `attic save` notes + recently modified notes (folders listed in `triage.include`) into **a** (skim, just be aware), **b** (no awareness needed — the system should apply it; the sheet lists the top 15 and up to 5 per week become `note_auto` proposals — approving one only writes `_attic/approved/<id>.prompt.md` for a human to run, nothing is applied automatically), **c** (invest time: read deeply, write, explain), **d** (drop: duplicates or useless items; a link seen twice this week becomes d without an LLM call; up to 5 vault notes per week become "archive this note?" proposals, and attic never moves notes itself, it only writes the instruction). c gets minutes; by default **every incoming item is classified** (in batches per model call) and the report ends with an **actual vs expected ratio** table (`triage.targetRatios`, default a 30% / b 45% / c 5% / d 20%; shown to the model as an expectation only, never forced). Each note also carries **usage signals** — how many other vault notes link to it with `[[...]]`, and in how many of your projects its title/file name/link appears (repos listed in `triage.projectPaths` or as paths in `_attic/projects.md`, symlinks not followed, capped per project) — and knowledge used in two or more projects or linked often is a candidate for c. If you set `triage.maxItems` or `triage.weeklyMinutes` yourself, those caps still apply. |
-| `attic audit [--json]` | List model IDs and CLI tools mentioned under `audit.paths`, cross-check recent radar events, suggest **improvement candidates**. |
+| `attic audit [--json]` | List model IDs and CLI tools mentioned under `audit.paths`, cross-check recent radar events, suggest **improvement candidates**. They become review cards only with `review.improve: true` (off by default). |
 | `attic review [--dry-run] [--fresh] [--json]` | triage + audit + radar -> `_attic/reviews/YYYY-Www.md`, proposals in `_attic/proposals/<id>.json` (id = `attic-` + sha256 prefix, TTL 7 days), notifications. `--dry-run`: sheet only (no proposals saved). The week's saved triage is reused unless it had runner errors, was empty, or the inbox/included notes changed after it; `--fresh` forces a new classification. When this week's radar has new models, one `system_review` proposal per week asks to re-review the whole system — approving it only writes an instruction file for a comparison table. |
 | `attic approve <id>` / `reject <id>` / `pending` | Decide from the terminal. |
 | `attic withdraw <id...> [--reason <text>]` | **Withdraw** pending proposals (`withdrawn`): never applied, never auto-applied after 7 days, not counted in the retro approval rate. Re-running `attic review` in the same week withdraws the earlier run's classification proposals that the new classification disagrees with, and older duplicates that only differ in wording. |
@@ -127,13 +127,14 @@ Same content gives the same id, so re-sending is idempotent; different content g
 ## Try it in a project (c → «try» → a task)
 
 c has two kinds. **learn** is a concept to read deeply and explain back (the teach queue). **try** is a tool or a method to test
-small in one of your projects: the model must name the project (from `_attic/projects.md`, by its name), a **next step** (what,
-where, how small) and a **check** (what to measure to call it worked or not). If any of the three is missing the item stays
-learn — nothing is filled in. When a note introduces several tools, the first one to try is the next step and the competitors
+small in one of your projects: the model must name the project (from `_attic/projects.md`, by its name), the **pain** there it
+addresses (the project's current sore problem — a blocker, a repeated failure, a cost — grounded in the project list or your
+saved judgement), a **next step** (what, where, how small) and a **check** (what to measure to call it worked or not). If any of
+the four is missing the item stays learn — nothing is filled in. When a note introduces several tools, the first one to try is the next step and the competitors
 and the ones not worth taking in go into the reason.
 
 The sheet starts with «이번 주 해 볼 것» (try items, ranked) and «들이지 않기로 한 것» (notes you saved with a judgement that
-ended up a/d, with the reason). Each try item becomes a `try_in_project` card (up to 5 a week). It is **not** auto-applied:
+ended up a/d, with the reason). Each try item becomes a `try_in_project` card (up to 3 a week). It is **not** auto-applied:
 silence expires it. Approving it (terminal, app, issue) writes `_attic/approved/<id>.prompt.md` — try small, measure before
 and after, write the result back to the vault, undo if it did not work — and, with `config.todo`, creates one task in your
 to-do app. A lock per proposal and the exit-code contract above make sure one approval gives at most one task.
@@ -178,6 +179,7 @@ In Claude Code or Codex, the `attic-teach` skill runs the same loop as a convers
 | `triage.targetRatios` | Expected share of a/b/c/d (default 0.30/0.45/0.05/0.20, must sum to 1). Shown to the model and in the report as « actual vs expected »; never forced. |
 | `triage.projectPaths` | Project repos (array of paths, or `{name: path}`) scanned for usage signals. Paths written in `_attic/projects.md` lines also count. Up to 20 projects, 200 text files / 2 MB per project; symlinks are not followed. |
 | `audit.paths[]` | Directories to scan for `.md .sh .mjs .py .toml .json`. Dot dirs (`.trash`, `.cache`…), `node_modules`, `archive`/`_archive`, `disabled*` are skipped. One suggestion per skill (nearest folder with `SKILL.md`, else `<path>/<folder>`) and capability, listing the week's new models/docs of that kind (price drops: one per skill and model), matched on its declared purpose: `SKILL.md` name+description, else `README.md`, else a loose file's first 15 lines. |
+| `review.improve` | `true` turns audit suggestions into `improve_candidate` review cards. Off by default (the sheet only counts them); with it off, `attic review` withdraws pending improve cards. |
 | `audit.exclude[]` | Prefixes to leave out, written as suggestions show them (e.g. `skills/synced` for skills another app syncs in). |
 | `radar` | `priceThreshold` (0.2), `openrouterUrl`, `kieLlmsUrl`. |
 | `notifiers[]` | See below. |
