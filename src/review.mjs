@@ -263,7 +263,9 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     .map((p) => itemKey(p.payload)));
   const withdrawn = [];
   if (!dryRun) {
-    withdrawn.push(...retireStaleImprove(vault, now, { improve }));
+    // A failed pull may hide an answer given in the app: withdrawing would drop it (pull only acks withdrawn cards).
+    // Leave improve cards for the next run that can pull; until then they simply wait or expire.
+    if (!syncFailed) withdrawn.push(...retireStaleImprove(vault, now, { improve }));
     const itemOf = new Map((tri.items || []).map((it) => [itemKey(it), it]));
     for (const p of thisWeekPending()) {
       if (p.userClass) continue;
