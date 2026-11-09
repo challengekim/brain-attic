@@ -20,6 +20,8 @@ const HELP = {
   approve <id> | reject <id> | pending
   reclassify <id> <a|b|c|d>           분류 제안의 분류를 내가 정한다 (7일 무응답 자동 적용보다 우선)
   withdraw <id...> [--reason <글>]    대기 중인 제안을 철회한다 (중복·낡은 제안. 적용·자동 적용되지 않는다)
+  discard <id...> [--reason <글>]     철회·만료·거절된 제안을 폐기한다 (같은 노트·링크를 다시 제안하지 않는다)
+  archive [--run [--limit N]] | archive undo <id...>|--all | archive log   승인한 보관(d) 노트를 90_Archive/ 로 옮긴다 (기본은 계획만)
   sync                                양방향 어댑터에서 답을 가져오고 자기 것만 ack
   apply                               승인된 제안 적용 (화이트리스트 연산만 직접, 해 볼 것은 할일로)
   tick                                재발송 + sync + apply 한 번 (예약: 매시 20분 — 못 보낸 카드 재발송, 앱에서 누른 승인을 1시간 안에 반영)
@@ -38,10 +40,12 @@ const HELP = {
   audit: '사용법: attic audit [--json]\n  config.audit.paths 의 모델 ID/도구를 목록화하고 radar 사건과 대조해 개선 후보를 냅니다 (모델명 단순 치환 제안은 없음).',
   review: '사용법: attic review [--dry-run] [--fresh] [--json]\n  triage + audit + radar -> _attic/reviews/YYYY-Www.md, 제안 저장·발송. 이번 주 분류가 있으면 재사용(--fresh 로 다시 분류). --dry-run 은 시트만.',
   withdraw: '사용법: attic withdraw <id...> [--reason <글>]\n  대기 중(pending)인 제안만 철회합니다. 철회한 제안은 적용되지 않고, 7일이 지나도 자동 적용되지 않으며, 회고의 승인율에도 들어가지 않습니다.\n  이미 앱(decision-api)에 보낸 카드는 남지만, 거기서 눌러도 로컬에서는 아무것도 바뀌지 않습니다(ack 만 합니다).',
+  discard: '사용법: attic discard <id...> [--reason <글>]\n  철회(withdrawn)·만료(expired)·거절(rejected)된 제안을 «폐기» 로 닫습니다. 그 노트·링크는 다음 주부터 어떤 문구로도 다시 카드가 되지 않고, 같은 제안이 되살아나지도 않습니다.',
+  archive: '사용법: attic archive [--json] | attic archive --run [--limit N] | attic archive undo <id...> | attic archive undo --all | attic archive log\n  승인한 보관(d) 카드의 노트를 볼트 안 90_Archive/<원래 경로> 로 옮깁니다. 기본은 계획만 보여 줍니다(원 경로 → 새 경로, 없음·충돌·링크 때문에 보류, 공개 재료 허용 목록에서 빠지는지).\n  --run: 실제로 옮깁니다. 덮어쓰지 않고(하드 링크 후 원래 자리 제거) 앞뒤 해시를 비교하며, 모든 이동을 _attic/archive/ledger.json 에 남깁니다. 다른 노트가 경로로 가리키는 노트, 같은 이름의 노트가 또 있는 노트는 옮기지 않습니다. attic apply(매시 tick)도 승인된 보관 카드를 같은 방식으로 옮깁니다.\n  undo: 원장을 보고 제자리로 되돌립니다(보관본이 바뀌었거나 원래 자리에 다른 파일이 있으면 거부). 볼트 노트는 지우지 않습니다.',
   reclassify: '사용법: attic reclassify <id> <a|b|c|d>\n  대기 중인 분류 제안(c 설명하기 / b 자동 적용 / d 보관)의 분류를 바꿉니다. a 는 «인지만» 이라 제안을 닫습니다. 분류 제안은 7일 동안 답이 없으면 추천 분류 그대로 자동 적용됩니다.',
   approve: '사용법: attic approve <id>', reject: '사용법: attic reject <id>', pending: '사용법: attic pending [--json]',
   sync: '사용법: attic sync\n  decision-api / github-issues 에서 답을 가져옵니다. 로컬에 있는 제안 id 만 ack 합니다.',
-  apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach 는 직접, try_in_project(해 볼 것)는 지시문을 쓰고 config.todo 가 있으면 할일을 하나 만듭니다, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
+  apply: '사용법: attic apply\n  approved 제안만. add_source/remove_source/set_triage_budget/queue_teach/add_triage_rule 은 직접, archive_note(보관)는 노트를 90_Archive/ 로 옮기고(attic archive 참고), try_in_project(해 볼 것)는 지시문을 쓰고 config.todo 가 있으면 할일을 하나 만듭니다, 나머지는 _attic/approved/<id>.prompt.md 만 만듭니다.',
   tick: '사용법: attic tick\n  알림 때 못 보낸 대기 제안을 양방향 어댑터로 다시 보내고, 양방향 어댑터에서 답을 가져오고(sync) 승인된 제안을 적용(apply)합니다. 만료는 하지 않습니다(월요일 review 몫). 예약이 매시 20분에 돌립니다.',
   todo: '사용법: attic todo [status] | attic todo resolve <id> --delivered|--retry\n  할일 명령이 시간 초과·알 수 없는 종료로 끝났거나 도중에 멈춘 «해 볼 것» 을 보여줍니다. 앱에서 attic:<id> 를 찾아보고,\n  있으면 --delivered(닫기), 없으면 --retry(다음 apply 가 다시 만든다).',
   retro: '사용법: attic retro [--month YYYY-MM] [--dry-run]\n  기본은 지난달.',
@@ -61,7 +65,7 @@ async function main(argv) {
   if (!(cmd in HELP)) { console.error(`알 수 없는 명령: ${cmd}\n`); console.error(HELP._); return 2; }
   // teach has its own detailed help in src/teach.mjs
   if (cmd !== 'teach' && (rest.includes('--help') || rest.includes('-h'))) { console.log(HELP[cmd]); return 0; }
-  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title', 'reason'], bool: ['json', 'yes', 'dry-run', 'fresh', 'delivered', 'retry'] });
+  const args = parseArgs(rest, { string: ['vault', 'week', 'month', 'note', 'title', 'reason', 'limit'], bool: ['json', 'yes', 'dry-run', 'fresh', 'delivered', 'retry', 'run', 'all'] });
   const ctx = makeCtx({ vaultOverride: args.vault && cmd !== 'init' ? args.vault : undefined });
 
   switch (cmd) {
@@ -152,6 +156,50 @@ async function main(argv) {
         catch (e) { console.error(e.message); rc = 1; }
       }
       return rc;
+    }
+    case 'discard': {
+      const { discard } = await import('../src/proposals.mjs');
+      const ids = args._;
+      if (!ids.length) { console.error(HELP.discard); return 2; }
+      const vault = requireVault(ctx);
+      let rc = 0;
+      for (const id of ids) {
+        try { const p = discard(vault, id, { by: 'cli', reason: args.reason || '' }); console.log(`${p.id}: 폐기 (${p.status})`); }
+        catch (e) { console.error(e.message); rc = 1; }
+      }
+      return rc;
+    }
+    case 'archive': {
+      const ar = await import('../src/archive.mjs');
+      const { withRunLock } = await import('../src/runlock.mjs');
+      const vault = requireVault(ctx);
+      if (args._[0] === 'log') {
+        const led = ar.readArchiveLedger(vault);
+        if (args.json) printJson(led);
+        else if (!led.length) console.log('옮긴 기록이 없습니다');
+        else for (const e of led) console.log(`${(e.movedAt || e.startedAt || '').slice(0, 16)}  ${e.status}  ${e.proposalId}  ${e.from} -> ${e.to}${e.undoneAt ? `  (되돌림 ${e.undoneAt.slice(0, 16)})` : ''}${e.error ? `  ! ${e.error}` : ''}`);
+        return 0;
+      }
+      if (args._[0] === 'undo') {
+        const ids = args.all ? 'all' : args._.slice(1);
+        if (ids !== 'all' && !ids.length) { console.error(HELP.archive); return 2; }
+        const r = await withRunLock(vault, () => ar.undoArchive(vault, ids));
+        console.log(`되돌림 ${r.restored.length}건, 거부 ${r.refused.length}건`);
+        for (const e of r.restored) console.log(`  + ${e.proposalId}  ${e.to} -> ${e.from}`);
+        for (const e of r.refused) console.log(`  ! ${e.proposalId}  ${e.reason}`);
+        return r.refused.length ? 1 : 0;
+      }
+      if (args._.length) { console.error(HELP.archive); return 2; }
+      const limit = args.limit === undefined ? Infinity : Number(args.limit);
+      if (!(limit === Infinity || (Number.isInteger(limit) && limit > 0))) { console.error('--limit 은 1 이상 정수여야 합니다'); return 2; }
+      const run = () => ar.runArchive(ctx, { dryRun: !args.run, limit });
+      const r = args.run ? await withRunLock(vault, run) : await run();
+      if (args.json) { printJson(r); return 0; }
+      console.log(ar.renderPlan(r.plan));
+      if (!args.run) { console.log('\n(계획만 — 옮기려면 attic archive --run [--limit N])'); return 0; }
+      console.log(`\n옮김 ${r.moved.length}건 · 이미 보관됨으로 닫음 ${r.already.length}건 · 건너뜀 ${r.skipped.length}건 · 오류 ${r.errors.length}건`);
+      for (const e of r.errors) console.log(`  ! ${e.id}: ${e.error}`);
+      return r.errors.length ? 1 : 0;
     }
     case 'pending': {
       const { listProposals, expireStale } = await import('../src/proposals.mjs');

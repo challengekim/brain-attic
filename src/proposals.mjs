@@ -41,7 +41,8 @@ export function createProposal(vault, { kind, summary, payload, source = 'review
   const lines = (Array.isArray(summary) ? summary : String(summary).split('\n')).map((s) => String(s).trim()).filter(Boolean);
   const id = proposalId(vault, { kind, summary: lines, payload });
   const existing = readJson(file(vault, id), null);
-  if (existing && !['expired', 'withdrawn'].includes(existing.status)) return { proposal: existing, created: false };
+  // A discarded card (the owner closed it for good) is never revived, whatever its status.
+  if (existing && (existing.discardedAt || !['expired', 'withdrawn'].includes(existing.status))) return { proposal: existing, created: false };
   const p = {
     id, kind, summary: lines, payload, source, status: 'pending',
     // A revived (previously expired/withdrawn) proposal is a new generation: answers given to an older
@@ -98,6 +99,19 @@ export function withdraw(vault, id, { by = 'cli', reason = '', now = new Date() 
   if (p.status !== 'pending') throw new Error(`${id}: 이미 ${p.status} 상태라 철회할 수 없습니다`);
   p.status = 'withdrawn'; p.withdrawnAt = now.toISOString(); p.withdrawnBy = by;
   if (reason) p.withdrawReason = String(reason).slice(0, 300);
+  return saveProposal(vault, p);
+}
+
+/**
+ * Close a card for good: the item it was about is never proposed again (review skips its note/link, and the same
+ * content is not revived). Only a closed card (withdrawn, expired, rejected): a pending or approved one is still live.
+ */
+export function discard(vault, id, { by = 'cli', reason = '', now = new Date() } = {}) {
+  const p = getProposal(vault, id);
+  if (!p) throw new Error(`제안을 찾지 못했습니다: ${id}`);
+  if (!['withdrawn', 'expired', 'rejected'].includes(p.status)) throw new Error(`${id}: ${p.status} 상태라 폐기할 수 없습니다 (철회·만료·거절된 것만)`);
+  p.discardedAt = now.toISOString(); p.discardedBy = by;
+  if (reason) p.discardReason = String(reason).slice(0, 300);
   return saveProposal(vault, p);
 }
 

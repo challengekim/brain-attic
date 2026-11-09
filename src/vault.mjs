@@ -1,10 +1,11 @@
-// Vault helpers. brain-attic only WRITES under <vault>/_attic/. User notes are read-only.
+// Vault helpers. brain-attic only WRITES under <vault>/_attic/. User notes are read-only -- the one exception is
+// src/archive.mjs, which MOVES an approved d note to 90_Archive/ (never edits or deletes one).
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { readJson, writeFileAtomic } from './util.mjs';
 
-export const ATTIC_DIRS = ['inbox', 'saved', 'state', 'radar', 'triage', 'reviews', 'proposals', 'approved', 'retro', 'teach', 'feedback', 'rules'];
+export const ATTIC_DIRS = ['inbox', 'saved', 'state', 'radar', 'triage', 'reviews', 'proposals', 'approved', 'retro', 'teach', 'feedback', 'rules', 'archive'];
 
 export function atticRoot(vault) { return path.join(vault, '_attic'); }
 export function atticPath(vault, ...p) { return path.join(vault, '_attic', ...p); }

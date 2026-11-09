@@ -1,5 +1,6 @@
-// attic apply: approved proposals only. Whitelisted ops edit config/files directly; everything else only
-// produces a prompt file (_attic/approved/<id>.prompt.md) that a human can run through `claude -p`.
+// attic apply: approved proposals only. Whitelisted ops edit config/files directly (archive_note moves the note to
+// 90_Archive/, src/archive.mjs); everything else only produces a prompt file (_attic/approved/<id>.prompt.md) that a
+// human can run through `claude -p`.
 import fs from 'node:fs';
 import { saveConfig } from './config.mjs';
 import { requireVault } from './config.mjs';
@@ -9,8 +10,9 @@ import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
 import { applyTry } from './todo.mjs';
 import { addRule } from './feedback.mjs';
+import { linkIndex, moveOne, planArchive } from './archive.mjs';
 
-export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule'];
+export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule', 'archive_note'];
 
 function validSource(s) {
   return s && typeof s === 'object' && ((typeof s.url === 'string' && /^https?:\/\//.test(s.url)) || (typeof s.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(s.repo)));
@@ -36,6 +38,16 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
   const result = { applied: [], prompts: [], errors: [], skipped: [] };
   let configDirty = false;
   const awaitingConfig = []; // config ops: marked applied only AFTER the config file was saved
+  // One link scan for all approved d cards of this run (it reads every note once).
+  let archivePlan = null;
+  const archiveRow = (p) => {
+    if (!archivePlan) {
+      const ps = listProposals(vault, { status: 'approved' }).filter((q) => q.payload?.op === 'archive_note' && isApplicable(q));
+      const files = ps.map((q) => q.payload.file).filter((f) => typeof f === 'string');
+      archivePlan = new Map(planArchive(vault, ps, { index: linkIndex(vault, files) }).map((r) => [r.id, r]));
+    }
+    return archivePlan.get(p.id);
+  };
   for (const p of listProposals(vault, { status: 'approved' })) {
     if (onlyAuto && !p.autoApplied) continue;
     // Only proposals approved within createdAt + TTL may act (an old/expired approval must not).
@@ -73,6 +85,17 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
         addRule(vault, { text: p.payload.text, basedOn: p.payload.basedOn || [], proposalId: p.id }, now);
         p.status = 'applied'; p.appliedAt = now.toISOString(); saveProposal(vault, p);
         result.applied.push({ id: p.id, op });
+      } else if (op === 'archive_note') {
+        // Move to 90_Archive/<same path>; never overwrite, never delete; a note other notes reach by path stays put.
+        const row = archiveRow(p);
+        if (row?.status === 'already') {
+          p.status = 'applied'; p.appliedAt = now.toISOString(); p.archivedTo = row.to; p.archivedBefore = true; saveProposal(vault, p);
+          result.applied.push({ id: p.id, op, already: true });
+        } else if (row && ['ready', 'half'].includes(row.status)) {
+          const m = moveOne(vault, row, now);
+          if (m.ok) result.applied.push({ id: p.id, op, to: row.to, ...(p.autoApplied ? { auto: true } : {}) });
+          else result.errors.push({ id: p.id, error: m.error });
+        } else result.skipped.push({ id: p.id, reason: `보관 안 함 — ${row?.reason || '계획 없음'}` });
       } else if (op === 'try_in_project') {
         // Own path: instruction file + (with config.todo) one outside task, under a per-proposal lock (see todo.mjs).
         const r = await applyTry(ctx, vault, p.id, now);
