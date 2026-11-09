@@ -418,3 +418,34 @@ test('[archive/r2] crash after setting OUR file aside: the next run finishes the
   assert.equal(fs.readFileSync(fa, 'utf8'), 'old\n');
   assert.ok(!fs.existsSync(ta));
 });
+
+// ---------------------------------------------------------------- review fixes (PR #14 round 3)
+
+test('[archive/r3] an encoded Korean link followed by a stray % on the same line still blocks', () => {
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/한글.md');
+  note(vault, '2026-11-01.md', '- [x](10_Knowledge/References/A/%ED%95%9C%EA%B8%80.md) 100%\n');
+  const [r] = planArchive(vault, [approvedDrop(vault, '10_Knowledge/References/A/한글.md')]);
+  assert.equal(r.status, 'blocked');
+});
+
+test('[archive/r3] when putting a newly saved file back fails, the move is not closed and the aside stays recorded', async (t) => {
+  if (process.getuid?.() === 0) return t.skip('root ignores directory permissions');
+  const ctx = setup();
+  const { p, fa, ta, asideDir } = crashState(ctx.vault, false);
+  const dir = path.dirname(fa);
+  fs.chmodSync(dir, 0o555); // linking back into the folder fails
+  try {
+    await runArchive(ctx, { now: LATER });
+    await apply(ctx, { now: LATER });
+  } finally { fs.chmodSync(dir, 0o755); }
+  assert.equal(getProposal(ctx.vault, p.id).status, 'approved');
+  const e = readArchiveLedger(ctx.vault)[0];
+  assert.notEqual(e.status, 'moved');
+  assert.ok(e.aside);
+  assert.equal(fs.readFileSync(path.join(asideDir, 'note.md'), 'utf8'), 'saved anew\n');
+  assert.equal(fs.readFileSync(ta, 'utf8'), 'old\n');
+  // once the folder is writable again, the next run puts the file back
+  await runArchive(ctx, { now: LATER });
+  assert.equal(fs.readFileSync(fa, 'utf8'), 'saved anew\n');
+});

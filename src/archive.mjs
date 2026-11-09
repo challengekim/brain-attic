@@ -84,12 +84,13 @@ function mdLinkTails(lines, k) {
   return out;
 }
 
-/** Whole-string decode (multi-byte UTF-8 escapes such as Korean names); falls back to the raw text. */
-function decodeMulti(s) { try { return decodeURIComponent(s).toLowerCase(); } catch { return decodeLoose(s); } }
-
-/** Lower-case and %-decode each escape on its own (a stray % must not hide the rest). */
+/**
+ * Lower-case and %-decode every run of escapes on its own, so a stray % elsewhere on the line cannot hide a valid
+ * (multi-byte, e.g. Korean) name. A run that is not valid UTF-8 is decoded escape by escape, else left as is.
+ */
 function decodeLoose(s) {
-  return s.replace(/%[0-9a-f]{2}/gi, (m) => { try { return decodeURIComponent(m); } catch { return m; } }).toLowerCase();
+  const one = (m) => { try { return decodeURIComponent(m); } catch { return m; } };
+  return s.replace(/(?:%[0-9a-f]{2})+/gi, (run) => { try { return decodeURIComponent(run); } catch { return run.replace(/%[0-9a-f]{2}/gi, one); } }).toLowerCase();
 }
 
 /**
@@ -140,8 +141,7 @@ export function linkIndex(vault, files) {
       for (let k = 0; k < lines.length; k++) {
         for (const tail of mdLinkTails(lines, k)) {
           const t = decodeLoose(tail);
-          const multibyte = decodeMulti(tail);
-          for (const [f, ns] of needles) if (ns.some((n) => t.includes(n) || multibyte.includes(n))) hit(f, 'md');
+          for (const [f, ns] of needles) if (ns.some((n) => t.includes(n))) hit(f, 'md');
         }
       }
     }
@@ -168,10 +168,13 @@ function linkBlock(l) {
  */
 export function planArchive(vault, proposals = null, { index = null } = {}) {
   const ps = (proposals || listProposals(vault, { status: 'approved' })).filter((p) => p?.payload?.op === 'archive_note');
+  const stuck = new Map(readArchiveLedger(vault).filter((e) => e.aside).map((e) => [e.proposalId, e]));
   const rows = ps.map((p) => {
     const from = p.payload.file;
     const row = { id: p.id, title: p.payload.title || '', from, to: null, status: 'ready', reason: '' };
     if (p.archiveUndoneAt) return { ...row, status: 'undone', reason: '되돌린 보관 — 다시 옮기지 않음' };
+    // A move stopped with the old file set aside and not yet settled: nothing is closed or moved until it is.
+    if (stuck.has(p.id)) return { ...row, to: archiveTarget(from), status: 'blocked', reason: `이동 중 따로 둔 파일이 아직 정리되지 않음 — ${stuck.get(p.id).aside}${stuck.get(p.id).error ? ` (${stuck.get(p.id).error})` : ''}` };
     const bad = badSource(vault, from);
     if (bad) return { ...row, status: 'invalid', reason: bad };
     row.to = archiveTarget(from);
@@ -318,6 +321,7 @@ export function moveOne(vault, row, now = new Date(), opts = {}) {
 export function closeAlready(vault, row, now = new Date()) {
   const ledger = readArchiveLedger(vault);
   const mine = ledger.filter((e) => e.proposalId === row.id && e.from === row.from && e.to === row.to);
+  if (mine.some((e) => e.aside)) throw new Error('이동 중 따로 둔 파일이 아직 정리되지 않아 완료로 닫지 않음');
   const ours = !mine.some((e) => e.status === 'moved') && [...mine].reverse().find((e) => ['moving', 'failed'].includes(e.status) && e.sha256 === sha(path.join(vault, row.to)));
   if (ours) { ours.status = 'moved'; ours.movedAt = now.toISOString(); ours.recovered = true; delete ours.error; saveLedger(vault, ledger); }
   closeProposal(vault, row.id, row.to, now, ours || mine.some((e) => e.status === 'moved') ? {} : { archivedBefore: true });
@@ -337,7 +341,10 @@ export async function runArchive(ctx, { dryRun = false, limit = Infinity, now = 
   const out = { plan, moved: [], already: [], skipped: [], errors: [] };
   if (dryRun) return out;
   for (const r of plan) {
-    if (r.status === 'already') { closeAlready(vault, r, now); out.already.push(r); continue; }
+    if (r.status === 'already') {
+      try { closeAlready(vault, r, now); out.already.push(r); } catch (e) { out.errors.push({ ...r, error: e.message }); }
+      continue;
+    }
     if (!['ready', 'half'].includes(r.status)) { out.skipped.push(r); continue; }
     if (out.moved.length >= limit) { out.skipped.push({ ...r, reason: '이번 실행 상한(--limit) 밖' }); continue; }
     const m = moveOne(vault, r, now);
