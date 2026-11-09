@@ -10,7 +10,7 @@ import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
 import { applyTry } from './todo.mjs';
 import { addRule } from './feedback.mjs';
-import { closeAlready, linkIndex, moveOne, planArchive } from './archive.mjs';
+import { closeAlready, linkIndex, moveOne, planArchive, recoverAside } from './archive.mjs';
 
 export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule', 'archive_note'];
 
@@ -42,6 +42,7 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
   let archivePlan = null;
   const archiveRow = (p) => {
     if (!archivePlan) {
+      recoverAside(vault, now);
       const ps = listProposals(vault, { status: 'approved' }).filter((q) => q.payload?.op === 'archive_note' && isApplicable(q));
       const files = ps.map((q) => q.payload.file).filter((f) => typeof f === 'string');
       archivePlan = new Map(planArchive(vault, ps, { index: linkIndex(vault, files) }).map((r) => [r.id, r]));

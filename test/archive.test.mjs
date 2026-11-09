@@ -364,3 +364,57 @@ test('[archive/r1] a move that finished but was not recorded (crash) is recovere
   const u = undoArchive(vault, [p.id], { now: LATER });
   assert.equal(u.restored.length, 1);
 });
+
+// ---------------------------------------------------------------- review fixes (PR #14 round 2)
+
+test('[archive/r2] percent-encoded parentheses and a reference target on the next line still block', () => {
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/B(1).md');
+  note(vault, '10_Knowledge/References/A/refd.md');
+  note(vault, '2026-11-01.md', '- [b](10_Knowledge/References/A/B%281%29.md)\n\n[r]:\n  10_Knowledge/References/A/refd.md\n');
+  const plan = planArchive(vault, ['10_Knowledge/References/A/B(1).md', '10_Knowledge/References/A/refd.md'].map((f) => approvedDrop(vault, f)));
+  assert.deepEqual(plan.map((r) => r.status), ['blocked', 'blocked']);
+});
+
+function crashState(vault, sameInode) {
+  note(vault, '10_Knowledge/References/A/x.md', 'old\n');
+  const p = approvedDrop(vault, '10_Knowledge/References/A/x.md');
+  const [row] = planArchive(vault, [p]);
+  const fa = path.join(vault, row.from), ta = path.join(vault, row.to);
+  fs.mkdirSync(path.dirname(ta), { recursive: true });
+  fs.linkSync(fa, ta);
+  if (!sameInode) { fs.unlinkSync(fa); fs.writeFileSync(fa, 'saved anew\n'); }
+  const asideDir = fs.mkdtempSync(path.join(path.dirname(fa), '.attic-archiving-'));
+  const aside = path.join(asideDir, 'note.md');
+  fs.renameSync(fa, aside); // crash right here
+  const crypto = require_('node:crypto');
+  const hash = crypto.createHash('sha256').update('old\n').digest('hex');
+  fs.mkdirSync(path.join(vault, '_attic/archive'), { recursive: true });
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify([{ proposalId: p.id, from: row.from, to: row.to, sha256: hash, status: 'moving', aside: path.relative(vault, aside).split(path.sep).join('/'), startedAt: LATER.toISOString() }]));
+  return { p, row, fa, ta, asideDir };
+}
+import { createRequire } from 'node:module';
+const require_ = createRequire(import.meta.url);
+
+test('[archive/r2] crash after setting a NEW file aside: the next run puts it back and does not close the card', async () => {
+  const ctx = setup();
+  const { p, fa, ta, asideDir } = crashState(ctx.vault, false);
+  await runArchive(ctx, { now: LATER });
+  assert.equal(fs.readFileSync(fa, 'utf8'), 'saved anew\n');
+  assert.equal(fs.readFileSync(ta, 'utf8'), 'old\n');
+  assert.ok(!fs.existsSync(asideDir));
+  assert.equal(getProposal(ctx.vault, p.id).status, 'approved');
+});
+
+test('[archive/r2] crash after setting OUR file aside: the next run finishes the move and undo works', async () => {
+  const ctx = setup();
+  const { p, fa, ta, asideDir } = crashState(ctx.vault, true);
+  await runArchive(ctx, { now: LATER });
+  assert.ok(!fs.existsSync(fa));
+  assert.ok(!fs.existsSync(asideDir));
+  assert.equal(readArchiveLedger(ctx.vault)[0].status, 'moved');
+  assert.equal(getProposal(ctx.vault, p.id).status, 'applied');
+  assert.equal(undoArchive(ctx.vault, [p.id], { now: LATER }).restored.length, 1);
+  assert.equal(fs.readFileSync(fa, 'utf8'), 'old\n');
+  assert.ok(!fs.existsSync(ta));
+});

@@ -73,13 +73,23 @@ const REFDEF = /^\s{0,3}\[[^\]\n]+\]:\s*(.*)$/;
  * target (`[r]: path.md`). Deliberately loose (the rest of the line, parentheses and all): a markdown link we fail to
  * parse must not turn into a false "safe to move".
  */
-function mdLinkTails(line) {
+function mdLinkTails(lines, k) {
+  const line = lines[k];
   const out = [];
   let i = line.indexOf('](');
   while (i >= 0) { out.push(line.slice(i + 2)); i = line.indexOf('](', i + 2); }
   const ref = REFDEF.exec(line);
-  if (ref) out.push(ref[1]);
+  // A reference definition may put its target on the next line.
+  if (ref) out.push(ref[1].trim() ? ref[1] : (lines[k + 1] || ''));
   return out;
+}
+
+/** Whole-string decode (multi-byte UTF-8 escapes such as Korean names); falls back to the raw text. */
+function decodeMulti(s) { try { return decodeURIComponent(s).toLowerCase(); } catch { return decodeLoose(s); } }
+
+/** Lower-case and %-decode each escape on its own (a stray % must not hide the rest). */
+function decodeLoose(s) {
+  return s.replace(/%[0-9a-f]{2}/gi, (m) => { try { return decodeURIComponent(m); } catch { return m; } }).toLowerCase();
 }
 
 /**
@@ -108,7 +118,7 @@ export function linkIndex(vault, files) {
   // How a markdown link may spell each file's name: as is, or URL-encoded (spaces as %20, or everything encoded).
   const needles = new Map(files.map((f) => {
     const b = path.posix.basename(f);
-    return [f, [...new Set([b, encodeURI(b), encodeURIComponent(b), b.replace(/ /g, '%20')].map((x) => x.toLowerCase()))]];
+    return [f, [b.toLowerCase()]]; // matched against the %-decoded link text
   }));
   // Every note is a link source, the candidates too (one candidate may link another); only a note's links to itself are ignored.
   for (const rel of all) {
@@ -126,10 +136,12 @@ export function linkIndex(vault, files) {
       } else for (const f of byName.get(target.toLowerCase()) || []) hit(f, 'name');
     }
     if (text.includes('](') || text.includes(']:')) {
-      for (const line of text.split('\n')) {
-        for (const tail of mdLinkTails(line)) {
-          const t = tail.toLowerCase();
-          for (const [f, ns] of needles) if (ns.some((n) => t.includes(n))) hit(f, 'md');
+      const lines = text.split('\n');
+      for (let k = 0; k < lines.length; k++) {
+        for (const tail of mdLinkTails(lines, k)) {
+          const t = decodeLoose(tail);
+          const multibyte = decodeMulti(tail);
+          for (const [f, ns] of needles) if (ns.some((n) => t.includes(n) || multibyte.includes(n))) hit(f, 'md');
         }
       }
     }
@@ -218,15 +230,54 @@ function closeProposal(vault, id, to, now, extra = {}) {
  * Remove the old directory entry only if it is still the very file now at the archive path. Renaming it aside first is
  * atomic, so an editor that saved a NEW file at the old path in the meantime gets that file back (never deleted).
  */
-function removeOldEntry(fa, ta) {
-  const aside = path.join(path.dirname(fa), `.attic-archiving-${process.pid}-${crypto.randomBytes(4).toString('hex')}.md`);
+function removeOldEntry(vault, entry, ledger, fa, ta) {
+  // An exclusive fresh folder (mkdtemp) next to the note: the rename below can never land on an existing file.
+  const dir = fs.mkdtempSync(path.join(path.dirname(fa), '.attic-archiving-'));
+  const aside = path.join(dir, 'note.md');
+  entry.aside = posix(path.relative(vault, aside));
+  saveLedger(vault, ledger); // recorded BEFORE the rename: a crash after it is repaired by recoverAside()
   fs.renameSync(fa, aside);
-  const a = fs.lstatSync(aside), t = fs.lstatSync(ta);
-  if (a.ino === t.ino && a.dev === t.dev) { fs.unlinkSync(aside); return; }
-  // Not our file any more (saved anew): put it back where it was. If yet another file appeared there, keep it aside.
-  try { fs.linkSync(aside, fa); fs.unlinkSync(aside); }
-  catch { throw new Error(`이동 중 원래 자리에 새로 저장된 파일이 있어 ${path.basename(aside)} 로 남겨 둠 — 직접 확인 필요`); }
-  throw new Error('이동 중 원래 자리의 노트가 새로 저장됨 — 그 노트는 그대로 두고, 보관 폴더에는 이전 내용이 남음');
+  settleAside(vault, entry, fa, ta);
+  saveLedger(vault, ledger);
+  if (entry.restored) throw new Error('이동 중 원래 자리의 노트가 새로 저장됨 — 그 노트는 제자리에 그대로 두고, 보관 폴더에는 이전 내용이 남음');
+}
+
+/**
+ * The file set aside during a move: our archived inode -> drop the extra name (the move is complete); anything else
+ * (saved anew by an editor) -> put it back at the old path. Never deletes a file that is not the archived inode.
+ */
+function settleAside(vault, entry, fa, ta) {
+  const aside = path.join(vault, entry.aside);
+  const a = statL(aside);
+  if (a) {
+    const t = statL(ta);
+    if (t && a.ino === t.ino && a.dev === t.dev) fs.unlinkSync(aside);
+    else {
+      try { fs.linkSync(aside, fa); } catch (e) { throw new Error(`따로 둔 노트를 제자리에 돌려놓지 못함(${e.code}) — ${entry.aside} 에 남아 있음, 직접 확인 필요`); }
+      fs.unlinkSync(aside);
+      entry.restored = true;
+    }
+  }
+  try { fs.rmdirSync(path.dirname(aside)); } catch { /* not empty or gone */ }
+  delete entry.aside;
+}
+const statL = (abs) => { try { return fs.lstatSync(abs); } catch { return null; } };
+
+/** Before any plan acts: repair moves that stopped while the old file was set aside (see removeOldEntry). */
+export function recoverAside(vault, now = new Date()) {
+  const ledger = readArchiveLedger(vault);
+  const out = [];
+  for (const e of ledger) {
+    if (!e.aside || !['moving', 'failed'].includes(e.status)) continue;
+    try {
+      settleAside(vault, e, path.join(vault, e.from), path.join(vault, e.to));
+      if (e.restored) { e.status = 'failed'; e.error = '이동 중 원래 자리의 노트가 새로 저장돼 제자리에 돌려놓음'; }
+      e.recoveredAt = now.toISOString();
+      out.push(e);
+    } catch (err) { e.status = 'failed'; e.error = err.message; out.push(e); }
+  }
+  if (out.length) saveLedger(vault, ledger);
+  return out;
 }
 
 /** Move one planned row (status ready or half). Returns { ok, error? }. opts.beforeUnlink: test hook. */
@@ -246,7 +297,7 @@ export function moveOne(vault, row, now = new Date(), opts = {}) {
     }
     if (sha(ta) !== hash) throw new Error('보관본 해시가 원본과 다름 — 원본을 지우지 않음');
     opts.beforeUnlink?.();
-    removeOldEntry(fa, ta);
+    removeOldEntry(vault, entry, ledger, fa, ta);
     if (fs.existsSync(fa) || !fs.existsSync(ta) || sha(ta) !== hash) throw new Error('이동 뒤 확인 실패');
   } catch (e) {
     entry.status = 'failed'; entry.error = e.message;
@@ -279,6 +330,7 @@ export function closeAlready(vault, row, now = new Date()) {
 export async function runArchive(ctx, { dryRun = false, limit = Infinity, now = new Date(), proposals = null } = {}) {
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
+  if (!dryRun) recoverAside(vault, now);
   const ps = (proposals || listProposals(vault, { status: 'approved' })).filter((p) => p.payload?.op === 'archive_note' && isApplicable(p))
     .sort((x, y) => String(x.createdAt).localeCompare(String(y.createdAt)) || String(x.payload.file).localeCompare(String(y.payload.file)));
   const plan = planArchive(vault, ps);
