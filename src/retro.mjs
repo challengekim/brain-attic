@@ -7,6 +7,7 @@ import { listProposals, createProposal } from './proposals.mjs';
 import { readJson } from './util.mjs';
 import { sourceName } from './collect.mjs';
 import { dispatch } from './notify/index.mjs';
+import { buildLedger, renderMetrics, weeklyMetrics } from './feedback.mjs';
 
 const DAY = 86400000;
 
@@ -26,7 +27,7 @@ function loadTriages(vault) {
 }
 
 /** Pure computation so tests can feed fixtures. */
-export function compute({ triages, proposals, teachNotes, sourcesConfigured, month, now }) {
+export function compute({ triages, proposals, teachNotes, sourcesConfigured, month, now, feedback = [] }) {
   const { start, end } = monthRange(month);
   const inMonth = triages.filter((t) => { const d = new Date(t.generatedAt); return d >= start && d < end; });
   const perSource = {};
@@ -73,7 +74,7 @@ export function compute({ triages, proposals, teachNotes, sourcesConfigured, mon
       if (!s || s.ac === 0) silent.push({ source: name, items90d: s ? s.total : 0 });
     }
   }
-  return { month, perSource, counts: tot, ratios, approval: { overall: dAll ? aAll / dAll : null, decided: dAll, byKind }, teach, silent, coverageOk, triageWeeks: inMonth.length };
+  return { month, feedback, perSource, counts: tot, ratios, approval: { overall: dAll ? aAll / dAll : null, decided: dAll, byKind }, teach, silent, coverageOk, triageWeeks: inMonth.length };
 }
 
 export function descriptorsFrom(r) {
@@ -98,6 +99,8 @@ export function renderRetro(r, descriptors, dryRun) {
     `- teach 숙달 노트: ${r.teach.count}개, 평균 점수 ${r.teach.avgScore === null ? '-' : r.teach.avgScore.toFixed(1)}`,
     '', '## 출처별 항목 수', '', '| 출처 | 전체 | a | b | c | d | 미분류 |', '|---|---|---|---|---|---|---|'];
   for (const [n, s] of Object.entries(r.perSource).sort((x, y) => y[1].total - x[1].total)) L.push(`| ${n} | ${s.total} | ${s.a} | ${s.b} | ${s.c} | ${s.d} | ${s.unclassified} |`);
+  // Feedback loop score: share of answered cards where the owner kept the recommendation, per week (higher = learning).
+  L.push('', '## 추천 일치율 (주별 — 태우님이 추천대로 고른 비율, 오를수록 분류기가 배우고 있음)', '', ...renderMetrics(r.feedback || []));
   L.push('', '## 범주별 승인율', '');
   const kinds = Object.entries(r.approval.byKind);
   if (!kinds.length) L.push('- 결정된 제안 없음');
@@ -117,7 +120,8 @@ export async function retro(ctx, { month, dryRun = false, now = new Date() } = {
   const tdir = atticPath(vault, 'teach');
   const teachNotes = [];
   try { for (const n of fs.readdirSync(tdir).filter((x) => x.endsWith('.md'))) teachNotes.push(parseFrontmatter(fs.readFileSync(path.join(tdir, n), 'utf8')).data); } catch { /* none */ }
-  const r = compute({ triages: loadTriages(vault), proposals: listProposals(vault), teachNotes, sourcesConfigured: (ctx.config.sources || []).map(sourceName), month, now });
+  const feedback = weeklyMetrics(buildLedger(vault, { now }).entries, vault);
+  const r = compute({ triages: loadTriages(vault), proposals: listProposals(vault), teachNotes, sourcesConfigured: (ctx.config.sources || []).map(sourceName), month, now, feedback });
   const descriptors = descriptorsFrom(r);
   const file = writeAttic(vault, `retro/${month}.md`, renderRetro(r, descriptors, dryRun));
   let created = [];

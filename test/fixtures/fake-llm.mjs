@@ -6,6 +6,7 @@ const ids = [...input.matchAll(/\{"id":"(i\d+)"/g)].map((m) => m[1]);
 const proj = (/^프로젝트 목록:\n- (.*)$/m.exec(input) || [])[1] || null;
 const out = (obj) => process.stdout.write(`잡담\n<<<JSON ${JSON.stringify(obj)} JSON>>>\n`);
 if (mode === 'broken') process.stdout.write('죄송합니다 JSON 을 못 만들겠습니다');
+else if (mode === 'rules') { const pids = [...new Set([...input.matchAll(/attic-[0-9a-f]{12}/g)].map((m) => m[0]))]; out({ rules: [{ text: '이미 내 규칙·스킬에 있는 내용을 말하는 글은 b 가 아니라 a 로 둔다', basedOn: pids.slice(0, 2) }, { text: '', basedOn: [] }] }); }
 else if (mode === 'badschema') out({ result: 'nope' });
 else if (mode === 'fail') { process.stderr.write('boom'); process.exit(3); }
 else if (mode === 'allc') out({ items: ids.map((id) => ({ id, class: 'c', project: proj, reason: '깊게 볼 가치', minutes: 100 })) });

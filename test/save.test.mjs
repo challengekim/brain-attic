@@ -70,9 +70,9 @@ test('new models -> one "re-review the whole system" proposal per week; none wit
   assert.deepEqual(d.payload.newModels, ['v/a', 'k/b']);
   assert.deepEqual(d.payload.modelsInUse, ['claude-opus-5', 'gpt-image-2']);
   const tri = { items: [] };
-  assert.equal(buildDescriptors(tri, aud, { system_review: 1 }, [{ kind: 'new', id: 'v/a' }]).length, 0, 'weekly cap');
+  assert.equal(buildDescriptors(tri, aud, { system_review: 1 }, [{ kind: 'new', id: 'v/a' }], new Map(), { systemReview: true }).length, 0, 'weekly cap');
 
-  const ctx = testCtx({ env: fakeLlmEnv(), config: { triage: { include: [], weeklyMinutes: 180 }, llm, notifiers: [] } });
+  const ctx = testCtx({ env: fakeLlmEnv(), config: { triage: { include: [], weeklyMinutes: 180 }, llm, notifiers: [], review: { systemReview: true } } });
   ensureSkeleton(ctx.vault);
   const now = new Date('2026-10-07T12:00:00');
   writeJson(atticPath(ctx.vault, 'radar', 'events.json'), [{ key: 'or:new:v/n', date: '2026-10-06', source: 'openrouter', kind: 'new', id: 'v/n', name: 'N', capabilities: [], detail: '신규' }]);

@@ -219,7 +219,7 @@ test('[5] queue_teach proposal keeps file + kind, and apply puts them in the que
 test('[6] b items: listed in the sheet (top 15), at most 5 note_auto proposals, apply writes only a prompt file', async () => {
   const bs = Array.from({ length: 20 }, (_, n) => item(`b${n}`, 'b', { url: `https://e.test/b${n}`, source: 'Feed' }));
   const tri = { items: bs, counts: { a: 0, b: 20, c: 0, unclassified: 0 }, usedMinutes: 0, weeklyMinutes: 180, demoted: 0, errors: [] };
-  const ds = buildDescriptors(tri, emptyAud);
+  const ds = buildDescriptors(tri, emptyAud, {}, [], new Map(), { autoCards: true });
   assert.equal(ds.length, MAX_AUTO);
   assert.ok(ds.every((d) => d.kind === 'auto' && d.payload.op === 'note_auto' && /반영할까요/.test(d.summary[0])));
   const sheet = renderSheet({ vault: tmp('v-'), week: '2026-W41', tri, aud: emptyAud, events: [], descriptors: ds, dryRun: false, nowIso: 'x' });
@@ -316,8 +316,8 @@ test('[8] plist and cron carry XDG_CONFIG_HOME and the config path (quoted)', as
 test('[r4] weekly caps count proposals already created this week', () => {
   const items = Array.from({ length: 12 }, (_, i) => ({ id: `b${i}`, class: 'b', title: `b${i}`, url: `https://x.example/${i}`, reason: 'r' }));
   const tri = { items };
-  const none = buildDescriptors(tri, emptyAud, { note_auto: 5 }).filter((d) => d.payload.op === 'note_auto');
+  const none = buildDescriptors(tri, emptyAud, { note_auto: 5 }, [], new Map(), { autoCards: true }).filter((d) => d.payload.op === 'note_auto');
   assert.equal(none.length, 0, 'cap already used up this week');
-  const two = buildDescriptors(tri, emptyAud, { note_auto: 3 }).filter((d) => d.payload.op === 'note_auto');
+  const two = buildDescriptors(tri, emptyAud, { note_auto: 3 }, [], new Map(), { autoCards: true }).filter((d) => d.payload.op === 'note_auto');
   assert.equal(two.length, 2);
 });

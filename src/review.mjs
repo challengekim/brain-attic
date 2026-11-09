@@ -12,6 +12,7 @@ import { apply } from './apply.mjs';
 import { syncAll } from './notify/index.mjs';
 import { dispatch } from './notify/index.mjs';
 import { savedDir } from './save.mjs';
+import { buildLedger, renderMetrics, ruleDescriptors, weeklyMetrics } from './feedback.mjs';
 
 const MAX_TEACH = 8;
 /**
@@ -58,6 +59,16 @@ export function triageIsStale(ctx, vault, saved) {
  * unrelated files with new model docs. The sheet still counts them; `attic audit` lists them.
  */
 export const improveCardsOn = (config) => config?.review?.improve === true;
+/**
+ * b (note_auto) and d (archive_note) cards are off unless `review.autoCards: true`. Approving them only ever wrote an
+ * instruction file nobody ran (2026-11-09: 32 piled up), and the b cards mostly restated rules the owner already has.
+ * The sheet still lists b/d.
+ */
+export const autoCardsOn = (config) => config?.review?.autoCards === true;
+/** The weekly "N new models — re-review the system?" card is off unless `review.systemReview: true` (model choice is fixed by the owner's rules; the list was noise). */
+export const systemReviewOn = (config) => config?.review?.systemReview === true;
+/** Rule cards from the feedback ledger (see feedback.mjs); on unless `feedback.rules: false`. */
+export const ruleCardsOn = (config) => config?.feedback?.rules !== false;
 
 /** Radar event kinds that mean "a model (or a documented model endpoint) is new". */
 export const NEW_MODEL_KINDS = ['new', 'modality', 'kie_new'];
@@ -99,9 +110,9 @@ export function trySummary(c) {
  * never takes a slot: the cap applies only to items without a card, so an existing card cannot starve one that newly needs
  * a card. An answered/applied one is not proposed again.
  */
-export function buildDescriptors(tri, aud, used = {}, events = [], represented = new Map(), { improve = false } = {}) {
+export function buildDescriptors(tri, aud, used = {}, events = [], represented = new Map(), { improve = false, autoCards = false, systemReview = false } = {}) {
   const out = [];
-  const sys = used.system_review ? null : systemReviewDescriptor(events, aud);
+  const sys = !systemReview || used.system_review ? null : systemReviewDescriptor(events, aud);
   if (sys) out.push(sys);
   const pick = (op, max) => {
     const want = tri.items.filter((i) => desiredOp(i) === op);
@@ -127,7 +138,7 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
       payload: { op: 'queue_teach', title: c.title, url: c.url, kind: kindOfItem(c), ...(c.file ? { file: c.file } : {}), project: c.project, minutes: c.minutes },
     });
   }
-  for (const b of pick('note_auto', MAX_AUTO)) {
+  for (const b of autoCards ? pick('note_auto', MAX_AUTO) : []) {
     out.push({
       kind: 'auto',
       summary: [`자동 적용 후보 — 이 업데이트/변경을 시스템에 반영할까요? ${b.title}`, `이유: ${b.reason}`],
@@ -137,7 +148,7 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
   }
   // d: only vault notes can be tidied, and never by attic itself (it does not write outside _attic/).
   // Approval produces a prompt file a human runs (move to an archive folder, or delete).
-  for (const d of pick('archive_note', MAX_DROP)) {
+  for (const d of autoCards ? pick('archive_note', MAX_DROP) : []) {
     out.push({
       kind: 'drop',
       summary: [`버릴 후보 — 이 노트를 보관함으로 옮길까요? ${d.title}`, `이유: ${d.reason}`],
@@ -169,8 +180,20 @@ export function retireStaleImprove(vault, now = new Date(), { improve = true } =
       : '개선 후보 카드를 끔(review.improve) — 철회' }).id);
 }
 
-export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [], improve = false }) {
+/** With b/d cards off, pending ones are taken back (they would otherwise auto-approve into instruction files). */
+export function retireAutoCards(vault, now = new Date()) {
+  return listProposals(vault, { status: 'pending' }).filter((p) => ['note_auto', 'archive_note'].includes(p.payload?.op) && !p.userClass)
+    .map((p) => withdraw(vault, p.id, { by: 'review', now, reason: 'b·d 카드를 끔(review.autoCards) — 승인해도 지시문만 쌓여 철회' }).id);
+}
+
+export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [], improve = false, metrics = null }) {
   const L = [`# 승인 시트 ${week}`, '', `생성: ${nowIso}${dryRun ? ' (dry-run: 제안 저장·발송 안 함)' : ''}`, ''];
+  if (metrics) {
+    // The loop's own score: did the owner keep what was recommended? It should go up week by week.
+    L.push('## 피드백 회고 — 추천 일치율', '', ...renderMetrics(metrics), '');
+    const rules = descriptors.filter((d) => d.payload?.op === 'add_triage_rule');
+    if (rules.length) L.push('이번 주 규칙 후보 (승인하면 다음 분류부터 씀):', ...rules.map((d) => `- ${d.summary[0]}`), '');
+  }
   const linkOf = (r) => {
     const title = r.title.replace(/[\[\]]/g, '');
     return r.url && !r.file ? `[${title}](${r.url})` : r.file ? `[[${r.file.replace(/\.md$/, '')}|${title}]]` : title;
@@ -232,6 +255,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   ensureSkeleton(vault);
   week = week || isoWeek(now);
   const improve = improveCardsOn(ctx.config);
+  const autoCards = autoCardsOn(ctx.config);
   // Remote answers (decision-api / GitHub Issues) are pulled first: silence is only silence once we could ask. A failed pull
   // or a dry-run leaves overdue classification proposals pending instead of applying them.
   let canAuto = !dryRun;
@@ -266,6 +290,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     // A failed pull may hide an answer given in the app: withdrawing would drop it (pull only acks withdrawn cards).
     // Leave improve cards for the next run that can pull; until then they simply wait or expire.
     if (!syncFailed) withdrawn.push(...retireStaleImprove(vault, now, { improve }));
+    if (!syncFailed && !autoCards) withdrawn.push(...retireAutoCards(vault, now));
     const itemOf = new Map((tri.items || []).map((it) => [itemKey(it), it]));
     for (const p of thisWeekPending()) {
       if (p.userClass) continue;
@@ -292,8 +317,13 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     const k = `${p.payload.op}\u0000${itemKey(p.payload)}`;
     if (represented.get(k) !== 'done') represented.set(k, p.status === 'pending' ? 'pending' : 'done');
   }
-  const descriptors = buildDescriptors(tri, aud, used, events, represented, { improve })
+  const descriptors = buildDescriptors(tri, aud, used, events, represented, { improve, autoCards, systemReview: systemReviewOn(ctx.config) })
     .filter((d) => !(OP_CLASS[d.payload?.op] && humanKeys.has(itemKey(d.payload))));
+  // Feedback loop: the ledger of the owner's answers (after the pull above, so this week's answers are in), the
+  // weekly agreement rate, and rule cards from answers that differed from the recommendation.
+  const ledger = buildLedger(vault, { now });
+  const metrics = weeklyMetrics(ledger.entries, vault);
+  if (ruleCardsOn(ctx.config)) descriptors.push(...await ruleDescriptors(ctx, ledger.entries));
   // Classification suggestions nobody answered for 7 days are applied as recommended (not on --dry-run).
   const auto = canAuto ? await apply(ctx, { now, onlyAuto: true }) : { applied: [], prompts: [], errors: [] };
   // What apply() really did for auto-approved proposals (including ones `attic pending` / `attic sync` approved earlier); failures are listed apart.
@@ -301,7 +331,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const autoApplied = autoOk.map((id) => getProposal(vault, id)).filter((p) => p && !p.autoReportedAt); // each one is reported once
   for (const p of autoApplied) saveProposal(vault, { ...p, autoReportedAt: now.toISOString() });
   const autoErrors = auto.errors;
-  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied, improve });
+  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied, improve, metrics });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
   if (!dryRun) {
@@ -332,5 +362,5 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
       notified = await dispatch(ctx, msg, pending);
     }
   }
-  return { week, sheetFile, dryRun, expired: expired.length, withdrawn, autoApplied: autoApplied.map((p) => p.id), autoErrors, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
+  return { week, sheetFile, dryRun, agreement: metrics[0] || null, expired: expired.length, withdrawn, autoApplied: autoApplied.map((p) => p.id), autoErrors, counts: tri.counts, suggestions: aud.suggestions.length, proposals: proposals.map((p) => p.id), notified };
 }
