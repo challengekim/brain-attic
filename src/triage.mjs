@@ -11,6 +11,7 @@ import { parseInbox } from './collect.mjs';
 import { savedDir } from './save.mjs';
 import { computeUsage, BACKLINK_HOT } from './usage.mjs';
 import { guideFor } from './feedback.mjs';
+import { activeFocus, applyFocus } from './focus.mjs';
 
 const BATCH = 40; // items per model call. There is no overall cap unless config.triage.maxItems is set.
 export const DEFAULT_RATIOS = { a: 0.30, b: 0.45, c: 0.05, d: 0.20 };
@@ -21,11 +22,11 @@ export const TRIAGE_SCHEMA = 3; // 3: try needs `pain` (the project's sore probl
 export const NEXT_MAX = 160;
 
 /**
- * Order of try items (sheet and cards): the model's priority, then notes the user saved with a judgement of their own,
+ * Order of try items (sheet and cards): a project in its focus window (triage.projectFocus) first, the model's priority, then notes the user saved with a judgement of their own,
  * then knowledge already used in several projects, then the shorter one.
  */
 export function tryRank(x, y) {
-  return (x.priority || 3) - (y.priority || 3) || (y.relevance ? 1 : 0) - (x.relevance ? 1 : 0)
+  return (y.focus ? 1 : 0) - (x.focus ? 1 : 0) || (x.priority || 3) - (y.priority || 3) || (y.relevance ? 1 : 0) - (x.relevance ? 1 : 0)
     || (y.usage?.projects || 0) - (x.usage?.projects || 0) || (x.minutes || 0) - (y.minutes || 0);
 }
 
@@ -216,7 +217,7 @@ export function normalizeItem(raw, projects) {
 export function applyBudget(items, weeklyMinutes) {
   let used = 0;
   const cs = items.filter((i) => i.class === 'c')
-    .sort((x, y) => (x.action === 'try' ? 0 : 1) - (y.action === 'try' ? 0 : 1) || (x.project ? 0 : 1) - (y.project ? 0 : 1) || x.minutes - y.minutes);
+    .sort((x, y) => (x.action === 'try' ? 0 : 1) - (y.action === 'try' ? 0 : 1) || (x.focus ? 0 : 1) - (y.focus ? 0 : 1) || (x.project ? 0 : 1) - (y.project ? 0 : 1) || x.minutes - y.minutes);
   const keep = new Set();
   for (const c of cs) { if (used + c.minutes <= weeklyMinutes) { used += c.minutes; keep.add(c.id); } }
   let demoted = 0;
@@ -252,7 +253,7 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
   if (ratioWarning) ctx.log.warn(`triage: ${ratioWarning}`);
   let usage = new Map();
   try { usage = computeUsage(ctx, items, { projectLines: projects }); } catch (e) { ctx.log.warn(`triage: 사용 신호 계산 실패 -> 신호 없이 분류 (${e.message})`); }
-  const guide = guideFor(ctx);
+  const guide = guideFor(ctx, { now });
   const opts = llmOpts(ctx);
   const classified = new Map();
   const errors = [];
@@ -277,6 +278,8 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
       ...(c.action ? { action: c.action } : {}), ...(c.next ? { pain: c.pain, next: c.next, check: c.check, priority: c.priority } : {}) }
       : { ...base, class: 'unclassified', project: null, reason: '분류하지 못함' };
   });
+  // The owner's dated project plan: no try on a sleeping project (whatever the model said), focus projects first.
+  const focus = applyFocus(result, activeFocus(ctx.config, now));
   for (const it of dups) {
     result.push({ id: it.id, title: it.title, url: it.url, source: it.source, date: it.date, ...(it.file ? { file: it.file } : {}), class: 'd', project: null, reason: '같은 링크가 이번 주에 이미 들어와 있는 중복' });
   }
@@ -288,7 +291,7 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
     : { usedMinutes: result.reduce((s, r) => s + (r.class === 'c' ? r.minutes || 0 : 0), 0), demoted: 0 };
   const counts = Object.fromEntries(CLASSES.map((k) => [k, result.filter((r) => r.class === k).length]));
   const ratios = ratioReport(result, targetRatios);
-  const out = { schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx, guide), week, guide: { rules: guide.rules, examples: guide.examples, contextChars: guide.contextChars }, generatedAt: now.toISOString(), weeklyMinutes: budget, usedMinutes, demoted, counts, ratios, errors, overflow: overflow.length, items: result };
+  const out = { schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx, guide), week, guide: { rules: guide.rules, examples: guide.examples, contextChars: guide.contextChars }, generatedAt: now.toISOString(), focus, weeklyMinutes: budget, usedMinutes, demoted, counts, ratios, errors, overflow: overflow.length, items: result };
   writeAtticJson(vault, `triage/${week}.json`, out);
   writeAttic(vault, `triage/${week}.md`, renderTriage(out));
   return out;

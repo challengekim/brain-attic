@@ -12,7 +12,7 @@ import { apply } from './apply.mjs';
 import { syncAll } from './notify/index.mjs';
 import { dispatch } from './notify/index.mjs';
 import { savedDir } from './save.mjs';
-import { buildLedger, renderMetrics, ruleDescriptors, weeklyMetrics } from './feedback.mjs';
+import { buildLedger, guideFor, renderMetrics, ruleDescriptors, weeklyMetrics } from './feedback.mjs';
 
 const MAX_TEACH = 8;
 /**
@@ -36,10 +36,10 @@ export function kindOfItem(i) {
 }
 
 /** True when this week's saved triage should not be reused (failed run, empty, or inputs changed after it). */
-export function triageIsStale(ctx, vault, saved) {
+export function triageIsStale(ctx, vault, saved, now = new Date()) {
   if (!saved || !Array.isArray(saved.items)) return true;
   // Older result shape, or exclusions / project list changed since: the saved classification no longer fits.
-  if (saved.schema !== TRIAGE_SCHEMA || saved.inputKey !== triageInputKey(ctx)) return true;
+  if (saved.schema !== TRIAGE_SCHEMA || saved.inputKey !== triageInputKey(ctx, guideFor(ctx, { now }))) return true;
   if ((saved.errors || []).length || saved.items.length === 0) return true;
   const since = Date.parse(saved.generatedAt);
   if (!Number.isFinite(since)) return true;
@@ -110,12 +110,17 @@ export function trySummary(c) {
  * never takes a slot: the cap applies only to items without a card, so an existing card cannot starve one that newly needs
  * a card. An answered/applied one is not proposed again.
  */
-export function buildDescriptors(tri, aud, used = {}, events = [], represented = new Map(), { improve = false, autoCards = false, systemReview = false } = {}) {
+/** Notes/links whose card the owner discarded for good (`attic discard`): never proposed again, in any week. */
+export function discardedKeys(vault) {
+  return new Set(listProposals(vault).filter((p) => p.discardedAt && (isItemProposal(p) || p.recommended)).map((p) => itemKey(p.payload)).filter(Boolean));
+}
+
+export function buildDescriptors(tri, aud, used = {}, events = [], represented = new Map(), { improve = false, autoCards = false, systemReview = false, discarded = new Set() } = {}) {
   const out = [];
   const sys = !systemReview || used.system_review ? null : systemReviewDescriptor(events, aud);
   if (sys) out.push(sys);
   const pick = (op, max) => {
-    const want = tri.items.filter((i) => desiredOp(i) === op);
+    const want = tri.items.filter((i) => desiredOp(i) === op && !discarded.has(itemKey(i)));
     if (op === 'try_in_project') want.sort(tryRank); // the cap keeps the most important ones
     const state = (i) => represented.get(`${op}\u0000${itemKey(i)}`);
     const room = Math.max(0, max - (used[op] || 0));
@@ -146,8 +151,7 @@ export function buildDescriptors(tri, aud, used = {}, events = [], represented =
       payload: { op: 'note_auto', title: b.title, url: b.url, kind: kindOfItem(b), ...(b.file ? { file: b.file } : {}), project: b.project },
     });
   }
-  // d: only vault notes can be tidied, and never by attic itself (it does not write outside _attic/).
-  // Approval produces a prompt file a human runs (move to an archive folder, or delete).
+  // d: only vault notes. Approval moves the note to 90_Archive/<same path> (src/archive.mjs, `attic apply`).
   for (const d of autoCards ? pick('archive_note', MAX_DROP) : []) {
     out.push({
       kind: 'drop',
@@ -280,7 +284,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   // costs LLM calls and can come out slightly different. --fresh forces a new classification; a saved result with
   // runner errors, no items, or older than the current inbox/included notes is not reused.
   const saved = fresh ? null : readJson(atticPath(vault, 'triage', `${week}.json`), null);
-  const tri = !triageIsStale(ctx, vault, saved) ? saved : await triage(ctx, { week, now });
+  const tri = !triageIsStale(ctx, vault, saved, now) ? saved : await triage(ctx, { week, now });
   const aud = await audit(ctx, { now });
   const events = recentEvents(vault, 7, now);
   // A re-run of the same week (or --fresh) must not leave the earlier run's classification proposals behind when
@@ -325,7 +329,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     const k = `${p.payload.op}\u0000${itemKey(p.payload)}`;
     if (represented.get(k) !== 'done') represented.set(k, p.status === 'pending' ? 'pending' : 'done');
   }
-  const descriptors = buildDescriptors(tri, aud, used, events, represented, { improve, autoCards, systemReview: systemReviewOn(ctx.config) })
+  const descriptors = buildDescriptors(tri, aud, used, events, represented, { improve, autoCards, systemReview: systemReviewOn(ctx.config), discarded: discardedKeys(vault) })
     .filter((d) => !(OP_CLASS[d.payload?.op] && humanKeys.has(itemKey(d.payload))));
   // Feedback loop: the ledger of the owner's answers (after the pull above, so this week's answers are in), the
   // weekly agreement rate, and rule cards from answers that differed from the recommendation.
