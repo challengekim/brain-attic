@@ -186,7 +186,7 @@ export function retireAutoCards(vault, now = new Date()) {
     .map((p) => withdraw(vault, p.id, { by: 'review', now, reason: 'b·d 카드를 끔(review.autoCards) — 승인해도 지시문만 쌓여 철회' }).id);
 }
 
-export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [], improve = false, metrics = null }) {
+export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso, autoApplied = [], improve = false, metrics = null, autoCards = true }) {
   const L = [`# 승인 시트 ${week}`, '', `생성: ${nowIso}${dryRun ? ' (dry-run: 제안 저장·발송 안 함)' : ''}`, ''];
   if (metrics) {
     // The loop's own score: did the owner keep what was recommended? It should go up week by week.
@@ -222,10 +222,16 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
     `- a ${tri.counts.a} / b ${tri.counts.b} / c ${tri.counts.c} / d ${tri.counts.d ?? 0} / 미분류 ${tri.counts.unclassified} — ${tri.weeklyMinutes != null ? `c 시간 ${tri.usedMinutes}/${tri.weeklyMinutes}분${tri.demoted ? ` (예산 초과로 a 강등 ${tri.demoted}건)` : ''}` : `c 예상 시간 합계 ${tri.usedMinutes}분 (예산 상한 없음)`}`);
   L.push(...renderRatioTable(tri.ratios));
   if (tri.errors.length) L.push(`- 러너 오류: ${tri.errors[0]} -> 해당 항목은 미분류로 남겼습니다 (지어내지 않음)`);
-  for (const k of ['c', 'b', 'a']) {
+  const heading = {
+    c: 'c — 해 볼 것 · 깊게 읽고 설명할 것',
+    b: autoCards ? `b — 자동 적용 후보 (상위 ${SHEET_B_MAX}, 제안은 주당 최대 ${MAX_AUTO}건)` : `b — 시스템 반영 후보 (상위 ${SHEET_B_MAX}, 카드로 올리지 않음 — review.autoCards)`,
+    d: autoCards ? `d — 버릴 후보 (상위 15, 볼트 노트는 주당 최대 ${MAX_DROP}건 제안)` : 'd — 버릴 후보 (상위 15, 카드로 올리지 않음 — 옮길지는 직접)',
+    a: 'a — 인지만',
+  };
+  for (const k of ['c', 'b', 'd', 'a']) {
     const rows = tri.items.filter((i) => i.class === k).slice(0, k === 'c' ? 30 : 15);
     if (!rows.length) continue;
-    L.push('', `### ${k === 'c' ? 'c — 해 볼 것 · 깊게 읽고 설명할 것' : k === 'b' ? `b — 자동 적용 후보 (상위 ${SHEET_B_MAX}, 제안은 주당 최대 ${MAX_AUTO}건)` : 'a — 인지만'}`);
+    L.push('', `### ${heading[k]}`);
     for (const r of rows) {
       const title = r.title.replace(/[\[\]]/g, '');
       const link = r.url ? `[${title}](${r.url})` : r.file ? `[[${r.file.replace(/\.md$/, '')}|${title}]]` : title;
@@ -264,6 +270,9 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     try { canAuto = (await syncAll(ctx)).every((r) => r.ok !== false); } catch { canAuto = false; }
     syncFailed = !canAuto;
   }
+  // b/d cards off: take pending ones back BEFORE overdue ones are auto-approved below (only after a successful pull, so an
+  // answer given in the app is in first). Cards the owner re-classified stay: that class is their instruction.
+  const retiredAuto = canAuto && !autoCards ? retireAutoCards(vault, now) : [];
   // A failed pull means an on-time answer may be waiting remotely: expire nothing this run (the next successful one will).
   const changed = syncFailed ? [] : expireStale(vault, now, { auto: canAuto });
   const expired = changed.filter((p) => p.status === 'expired');
@@ -285,12 +294,11 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
     .filter((p) => isItemProposal(p) || p.recommended)
     .filter((p) => p.createdAt && isoWeek(new Date(p.createdAt)) === week && isHuman(p))
     .map((p) => itemKey(p.payload)));
-  const withdrawn = [];
+  const withdrawn = [...retiredAuto];
   if (!dryRun) {
     // A failed pull may hide an answer given in the app: withdrawing would drop it (pull only acks withdrawn cards).
     // Leave improve cards for the next run that can pull; until then they simply wait or expire.
     if (!syncFailed) withdrawn.push(...retireStaleImprove(vault, now, { improve }));
-    if (!syncFailed && !autoCards) withdrawn.push(...retireAutoCards(vault, now));
     const itemOf = new Map((tri.items || []).map((it) => [itemKey(it), it]));
     for (const p of thisWeekPending()) {
       if (p.userClass) continue;
@@ -331,7 +339,7 @@ export async function review(ctx, { dryRun = false, week, now = new Date(), fres
   const autoApplied = autoOk.map((id) => getProposal(vault, id)).filter((p) => p && !p.autoReportedAt); // each one is reported once
   for (const p of autoApplied) saveProposal(vault, { ...p, autoReportedAt: now.toISOString() });
   const autoErrors = auto.errors;
-  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied, improve, metrics });
+  const sheet = renderSheet({ vault, week, tri, aud, events, descriptors, dryRun, nowIso: now.toISOString(), autoApplied, improve, metrics, autoCards });
   const sheetFile = writeAttic(vault, `reviews/${week}.md`, sheet);
   let proposals = [], notified = [];
   if (!dryRun) {

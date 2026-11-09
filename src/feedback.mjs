@@ -42,8 +42,12 @@ const rulesFile = (vault) => atticPath(vault, 'rules', 'triage-rules.json');
  */
 export function decisionOf(p) {
   if (!p || !FEEDBACK_OPS.includes(p.recommended?.op || p.payload?.op)) return null;
-  if (!['approved', 'applied', 'rejected'].includes(p.status)) return null;
-  if (!p.decidedBy || p.decidedBy === 'auto') return null; // a late human approval (autoApplied but decidedBy a person/app) still counts
+  // Picking a class (CLI `attic reclassify`, or the app's class picker) is an answer even while the card waits for
+  // approval or is approved later by silence; otherwise only an approve/reject given by a person or the app counts
+  // (a late human approval is autoApplied but decidedBy the person/app).
+  const picked = !!p.userClass && !!p.reclassifiedBy && p.reclassifiedBy !== 'auto';
+  if (!['approved', 'applied', 'rejected', ...(picked ? ['pending'] : [])].includes(p.status)) return null;
+  if (!picked && (!p.decidedBy || p.decidedBy === 'auto')) return null;
   const recommended = p.recommended?.class || OP_CLASS[p.payload.op];
   let final;
   if (p.reclassifiedTo === 'a' || p.userClass === 'a') final = 'a';
@@ -74,7 +78,7 @@ export function buildLedger(vault, { now = new Date(), write = true } = {}) {
     const src = p.recommended?.payload || p.payload;
     const r = reasons[p.id];
     entries.push({
-      id: p.id, week: isoWeek(new Date(p.createdAt)), createdAt: p.createdAt, decidedAt: p.decidedAt || p.reclassifiedAt || null,
+      id: p.id, week: isoWeek(new Date(p.createdAt)), createdAt: p.createdAt, decidedAt: p.reclassifiedAt || p.decidedAt || null,
       op: p.recommended?.op || p.payload.op, title: String(src.title || p.summary?.[0] || p.id).slice(0, 160),
       ...(src.file ? { file: src.file } : {}), ...(src.url ? { url: src.url } : {}), project: src.project || null,
       ...d, ...(r ? { reasonTag: r.tag, ...(r.note ? { note: r.note } : {}) } : {}),
