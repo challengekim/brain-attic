@@ -10,6 +10,7 @@ import { runJSON, llmOpts, wrapUntrusted, UNTRUSTED_NOTICE } from './llm.mjs';
 import { parseInbox } from './collect.mjs';
 import { savedDir } from './save.mjs';
 import { computeUsage, BACKLINK_HOT } from './usage.mjs';
+import { guideFor } from './feedback.mjs';
 
 const BATCH = 40; // items per model call. There is no overall cap unless config.triage.maxItems is set.
 export const DEFAULT_RATIOS = { a: 0.30, b: 0.45, c: 0.05, d: 0.20 };
@@ -59,11 +60,14 @@ function excludedPrefixes(ctx) {
     .map((x) => x.replace(/^\/+|\/+$/g, '') + '/');
 }
 
-/** Fingerprint of everything outside the notes that changes the classification (exclusions, project list). */
-export function triageInputKey(ctx) {
+/**
+ * Fingerprint of everything outside the notes that changes the classification (exclusions, project list, and the
+ * feedback guide: approved rules, the owner's recent answers, the system context).
+ */
+export function triageInputKey(ctx, guide = guideFor(ctx)) {
   let projects = '';
   try { projects = fs.readFileSync(projectsFileOf(ctx), 'utf8'); } catch { /* none */ }
-  return sha256(JSON.stringify({ exclude: [...excludedPrefixes(ctx)].sort(), projects })).slice(0, 12);
+  return sha256(JSON.stringify({ exclude: [...excludedPrefixes(ctx)].sort(), projects, guide: guide.key })).slice(0, 12);
 }
 
 export function gatherItems(ctx, week, now = new Date()) {
@@ -147,7 +151,7 @@ export function ratioReport(items, target) {
   return { classified: n, rows };
 }
 
-function buildPrompt(batch, projects, ratios, usage) {
+export function buildPrompt(batch, projects, ratios, usage, guide = null) {
   const list = batch.map((it) => {
     const u = usage?.get(it.id);
     return JSON.stringify({ id: it.id, title: truncate(it.title, 120), url: it.url, summary: truncate(it.summary, 240), tags: it.tags || [],
@@ -173,6 +177,7 @@ function buildPrompt(batch, projects, ratios, usage) {
     `기대 비율(참고만): a ${pct(ratios.a)} / b ${pct(ratios.b)} / c ${pct(ratios.c)} / d ${pct(ratios.d)}. 이 비율을 맞추려고 억지로 분류하지 않는다. 항목 하나하나를 기준대로 판단하고, 비율은 한쪽으로 심하게 쏠렸을 때 다시 생각해 보는 눈금으로만 쓴다.`,
     `연결 프로젝트(project)는 아래 목록에서 줄 맨 앞의 이름(첫 « — » 앞)만 그대로 적거나, 붙는 곳이 없으면 null.`,
     '프로젝트 목록:', projects.length ? projects.map((p) => `- ${p}`).join('\n') : '(없음)',
+    ...(guide?.text ? [guide.text] : []),
     `출력 스키마: {"items":[{"id":"입력의 id","class":"a|b|c|d","project":"프로젝트 이름 또는 null","reason":"이유 한 줄","minutes":정수(c 일 때만),"action":"try|learn"(c 일 때만),"pain":"try 일 때만","next":"try 일 때만","check":"try 일 때만","priority":1|2|3(try 일 때만)}]}`,
     UNTRUSTED_NOTICE, wrapUntrusted(list),
   ].join('\n');
@@ -247,13 +252,14 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
   if (ratioWarning) ctx.log.warn(`triage: ${ratioWarning}`);
   let usage = new Map();
   try { usage = computeUsage(ctx, items, { projectLines: projects }); } catch (e) { ctx.log.warn(`triage: 사용 신호 계산 실패 -> 신호 없이 분류 (${e.message})`); }
+  const guide = guideFor(ctx);
   const opts = llmOpts(ctx);
   const classified = new Map();
   const errors = [];
   for (let i = 0; i < items.length; i += BATCH) {
     const batch = items.slice(i, i + BATCH);
     try {
-      const obj = await runJSON({ prompt: buildPrompt(batch, projects, targetRatios, usage), validate: validateResponse, untrusted: true, ...opts });
+      const obj = await runJSON({ prompt: buildPrompt(batch, projects, targetRatios, usage, guide), validate: validateResponse, untrusted: true, ...opts });
       const ids = new Set(batch.map((b) => b.id));
       for (const raw of obj.items) {
         const n = normalizeItem(raw, projects);
@@ -282,7 +288,7 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
     : { usedMinutes: result.reduce((s, r) => s + (r.class === 'c' ? r.minutes || 0 : 0), 0), demoted: 0 };
   const counts = Object.fromEntries(CLASSES.map((k) => [k, result.filter((r) => r.class === k).length]));
   const ratios = ratioReport(result, targetRatios);
-  const out = { schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx), week, generatedAt: now.toISOString(), weeklyMinutes: budget, usedMinutes, demoted, counts, ratios, errors, overflow: overflow.length, items: result };
+  const out = { schema: TRIAGE_SCHEMA, inputKey: triageInputKey(ctx, guide), week, guide: { rules: guide.rules, examples: guide.examples, contextChars: guide.contextChars }, generatedAt: now.toISOString(), weeklyMinutes: budget, usedMinutes, demoted, counts, ratios, errors, overflow: overflow.length, items: result };
   writeAtticJson(vault, `triage/${week}.json`, out);
   writeAttic(vault, `triage/${week}.md`, renderTriage(out));
   return out;

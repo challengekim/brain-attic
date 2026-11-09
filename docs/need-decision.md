@@ -3,11 +3,13 @@
 <!-- 생성물이다. 손으로 고치지 않는다. 원장(docs/decisions/)을 고친 뒤 다시 만든다:
      node ~/.claude/scripts/build-decisions-index.mjs . --project brain-attic --public -->
 
-결정필요 0건 · 결정완료 2건 · 보류·폐기 0건.
+결정필요 1건 · 결정완료 2건 · 보류·폐기 0건.
 
 ## 결정필요
 
-지금 태우님 결정을 기다리는 것이 없다.
+| id | 무엇을 정하나 | 제기 | 기한 | 무응답 시 |
+|---|---|---|---|---|
+| [D-003](decisions/D-003-archive-executor.md) | 승인한 «보관»(d) 노트를 실제로 옮기는 실행기를 만들 것인가 | 2026-11-09 |  |  |
 
 ---
 

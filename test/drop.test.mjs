@@ -15,10 +15,10 @@ test('[d] d vault notes become archive proposals (prompt-only), capped per week;
     ...Array.from({ length: 7 }, (_, i) => ({ id: `v${i}`, class: 'd', title: `n${i}`, file: `10_Knowledge/n${i}.md`, reason: '중복' })),
     { id: 'f1', class: 'd', title: 'feed', url: 'https://x.example', reason: '광고' },
   ];
-  const ds = buildDescriptors({ items }, emptyAud).filter((d) => d.payload.op === 'archive_note');
+  const ds = buildDescriptors({ items }, emptyAud, {}, [], new Map(), { autoCards: true }).filter((d) => d.payload.op === 'archive_note');
   assert.equal(ds.length, 5);
   assert.ok(ds.every((d) => d.payload.file && d.kind === 'drop'));
-  const rest = buildDescriptors({ items }, emptyAud, { archive_note: 4 }).filter((d) => d.payload.op === 'archive_note');
+  const rest = buildDescriptors({ items }, emptyAud, { archive_note: 4 }, [], new Map(), { autoCards: true }).filter((d) => d.payload.op === 'archive_note');
   assert.equal(rest.length, 1);
 });
 

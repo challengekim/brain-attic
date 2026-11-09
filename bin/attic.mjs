@@ -25,6 +25,7 @@ const HELP = {
   tick                                재발송 + sync + apply 한 번 (예약: 매시 20분 — 못 보낸 카드 재발송, 앱에서 누른 승인을 1시간 안에 반영)
   todo [status] | todo resolve <id> --delivered|--retry   결과를 알 수 없는 할일 배달 확인
   retro [--month YYYY-MM] [--dry-run] 월간 자기평가
+  feedback [--prompt] [--json] | feedback tag <id> <태그> [--note <글>]   내 답 원장·추천 일치율·분류기가 받는 지침
   schedule install|uninstall|status [--dry-run]
   teach <주제|파일|URL> [--quiz-first] [--next|--queue|--due|--review <slug>|--save-session <json>]   설명 → 퀴즈 → 내가 설명하기
 `,
@@ -44,6 +45,7 @@ const HELP = {
   tick: '사용법: attic tick\n  알림 때 못 보낸 대기 제안을 양방향 어댑터로 다시 보내고, 양방향 어댑터에서 답을 가져오고(sync) 승인된 제안을 적용(apply)합니다. 만료는 하지 않습니다(월요일 review 몫). 예약이 매시 20분에 돌립니다.',
   todo: '사용법: attic todo [status] | attic todo resolve <id> --delivered|--retry\n  할일 명령이 시간 초과·알 수 없는 종료로 끝났거나 도중에 멈춘 «해 볼 것» 을 보여줍니다. 앱에서 attic:<id> 를 찾아보고,\n  있으면 --delivered(닫기), 없으면 --retry(다음 apply 가 다시 만든다).',
   retro: '사용법: attic retro [--month YYYY-MM] [--dry-run]\n  기본은 지난달.',
+  feedback: '사용법: attic feedback [--prompt] [--json] | attic feedback tag <id> <태그> [--note <글>]\n  내가 답한 카드(승인·거절·분류 바꿈)로 원장(_attic/feedback/ledger.json)을 다시 만들고 주별 추천 일치율과 승인된 분류 규칙을 보여줍니다.\n  --prompt: 다음 분류 때 모델이 받는 지침(승인한 규칙 + 최근 답 + 내 시스템 요약)을 그대로 출력합니다(모델 호출 없음).\n  tag: 추천과 다르게 답한 이유를 남깁니다. 태그: already-in-system, already-implemented, not-applicable, digest-wrapper, sleeping-project, not-worth-time, noise, worth-more, other',
   schedule: '사용법: attic schedule install|uninstall|status [--dry-run]\n  macOS: LaunchAgents, Linux: crontab 블록. collect 매일 08:00, radar 매일 09:10, review 월 08:30, retro 매월 1일 09:00, tick 매시 20분.',
   teach: '사용법: attic teach --help',
 };
@@ -218,6 +220,25 @@ async function main(argv) {
       const runRetro = () => retro(ctx, { month: args.month, dryRun: !!args['dry-run'] });
       const r = args['dry-run'] ? await runRetro() : await withRunLock(requireVault(ctx), runRetro);
       console.log(`회고: ${r.file}\n제안 ${r.proposals.length}건`);
+      return 0;
+    }
+    case 'feedback': {
+      const fb = await import('../src/feedback.mjs');
+      const vault = requireVault(ctx);
+      if (args._[0] === 'tag') {
+        const [, id, tag] = args._;
+        if (!id || !tag) { console.error(HELP.feedback); return 2; }
+        try { fb.recordReason(vault, id, tag, args.note || ''); console.log(`${id}: 이유 ${tag}${args.note ? ` — ${args.note}` : ''}`); return 0; }
+        catch (e) { console.error(e.message); return 1; }
+      }
+      if (args.prompt) { const g = fb.guideFor(ctx); console.log(g.text || '(지침 없음 — 승인한 규칙·답한 카드·triage.context 가 아직 없습니다)'); console.error(`\n[지침] 규칙 ${g.rules}개 · 답 사례 ${g.examples}건 · 시스템 요약 ${g.contextChars}자 · key ${g.key}`); return 0; }
+      const ledger = fb.buildLedger(vault);
+      const metrics = fb.weeklyMetrics(ledger.entries, vault);
+      if (args.json) { printJson({ entries: ledger.entries, metrics, rules: fb.readRules(vault) }); return 0; }
+      console.log(`원장: 답한 카드 ${ledger.entries.length}건 (추천과 다름 ${ledger.entries.filter((e) => !e.agreed).length}건, 이유 기록 ${ledger.entries.filter((e) => e.reasonTag).length}건)\n`);
+      console.log(fb.renderMetrics(metrics).join('\n'));
+      const rules = fb.readRules(vault);
+      console.log(`\n승인된 분류 규칙 ${rules.length}개${rules.length ? '\n' + rules.map((r) => `- ${r.text}`).join('\n') : ''}`);
       return 0;
     }
     case 'schedule': {

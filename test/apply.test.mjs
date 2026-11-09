@@ -19,8 +19,8 @@ const prop = (ctx, payload, approve = true) => {
 };
 const cfgNow = (ctx) => loadConfig(ctx.env, ctx.configPath);
 
-test('whitelist is exactly the four documented ops', () => {
-  assert.deepEqual(WHITELIST, ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach']);
+test('whitelist is exactly the five documented ops', () => {
+  assert.deepEqual(WHITELIST, ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule']);
 });
 
 test('add_source / remove_source / set_triage_budget change config only after approval', async () => {

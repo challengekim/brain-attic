@@ -8,8 +8,9 @@ import { isApplicable, listProposals, saveProposal } from './proposals.mjs';
 import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
 import { applyTry } from './todo.mjs';
+import { addRule } from './feedback.mjs';
 
-export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach'];
+export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule'];
 
 function validSource(s) {
   return s && typeof s === 'object' && ((typeof s.url === 'string' && /^https?:\/\//.test(s.url)) || (typeof s.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(s.repo)));
@@ -67,6 +68,11 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
         writeAtticJson(vault, 'teach/queue.json', q);
         p.status = 'applied'; p.appliedAt = now.toISOString(); saveProposal(vault, p);
         result.applied.push({ id: p.id, op, ...(p.autoApplied ? { auto: true } : {}) });
+      } else if (op === 'add_triage_rule') {
+        // A classification rule the owner approved: written under _attic/rules, read by the next triage.
+        addRule(vault, { text: p.payload.text, basedOn: p.payload.basedOn || [], proposalId: p.id }, now);
+        p.status = 'applied'; p.appliedAt = now.toISOString(); saveProposal(vault, p);
+        result.applied.push({ id: p.id, op });
       } else if (op === 'try_in_project') {
         // Own path: instruction file + (with config.todo) one outside task, under a per-proposal lock (see todo.mjs).
         const r = await applyTry(ctx, vault, p.id, now);
