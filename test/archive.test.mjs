@@ -9,7 +9,7 @@ import path from 'node:path';
 import { testCtx } from './helpers.mjs';
 import { atticPath, ensureSkeleton } from '../src/vault.mjs';
 import { createProposal, decide, getProposal, saveProposal, withdraw, discard } from '../src/proposals.mjs';
-import { archiveTarget, planArchive, runArchive, undoArchive, readArchiveLedger } from '../src/archive.mjs';
+import { archiveTarget, moveOne, planArchive, runArchive, undoArchive, readArchiveLedger } from '../src/archive.mjs';
 import { apply } from '../src/apply.mjs';
 import { activeFocus, applyFocus } from '../src/focus.mjs';
 import { guideFor } from '../src/feedback.mjs';
@@ -283,4 +283,84 @@ test('[focus] the classifier is told the current project states, and the saved t
   assert.equal(guideFor(ctx, { now: at('2026-11-17') }).key, g16.key);
   assert.notEqual(guideFor(ctx, { now: at('2026-11-23') }).key, g16.key);
   assert.notEqual(triageInputKey(ctx, guideFor(ctx, { now: at('2026-11-23') })), triageInputKey(ctx, g16));
+});
+
+// ---------------------------------------------------------------- review fixes (PR #14 round 1)
+
+test('[archive/r1] a link between two notes of the same batch is checked (moving only one would break it)', () => {
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/src.md', '[B 보기](B/target.md)\n');
+  note(vault, '10_Knowledge/References/A/B/target.md');
+  const plan = planArchive(vault, ['10_Knowledge/References/A/src.md', '10_Knowledge/References/A/B/target.md'].map((f) => approvedDrop(vault, f)));
+  assert.equal(plan.find((r) => r.from.endsWith('target.md')).status, 'blocked');
+});
+
+test('[archive/r1] markdown links with parentheses in the path and reference-style links block the move', () => {
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/B(1).md');
+  note(vault, '10_Knowledge/References/A/refd note.md');
+  note(vault, '2026-11-01.md', '- [b](10_Knowledge/References/A/B(1).md)\n\n[r]: <10_Knowledge/References/A/refd note.md>\n');
+  const plan = planArchive(vault, ['10_Knowledge/References/A/B(1).md', '10_Knowledge/References/A/refd note.md'].map((f) => approvedDrop(vault, f)));
+  assert.deepEqual(plan.map((r) => r.status), ['blocked', 'blocked']);
+});
+
+test('[archive/r1] a note saved anew (new file) between link and unlink is never deleted', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, '10_Knowledge/References/A/x.md', 'old\n');
+  const p = approvedDrop(vault, '10_Knowledge/References/A/x.md');
+  const [row] = planArchive(vault, [p]);
+  const fa = path.join(vault, row.from);
+  const r = moveOne(vault, row, LATER, { beforeUnlink: () => { fs.unlinkSync(fa); fs.writeFileSync(fa, 'edited by the owner\n'); } });
+  assert.equal(r.ok, false);
+  assert.equal(fs.readFileSync(fa, 'utf8'), 'edited by the owner\n');
+  assert.equal(fs.readFileSync(path.join(vault, row.to), 'utf8'), 'old\n');
+  assert.equal(getProposal(vault, p.id).status, 'approved');
+});
+
+test('[archive/r1] undo refuses an archive path that now goes through a symlink', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, '10_Knowledge/References/A/x.md', 'x\n');
+  const p = approvedDrop(vault, '10_Knowledge/References/A/x.md');
+  await runArchive(ctx, { now: LATER });
+  const outside = fs.mkdtempSync(path.join(path.dirname(vault), 'out-'));
+  fs.mkdirSync(path.join(outside, 'A'), { recursive: true });
+  fs.copyFileSync(path.join(vault, '90_Archive/10_Knowledge/References/A/x.md'), path.join(outside, 'A/x.md'));
+  fs.rmSync(path.join(vault, '90_Archive/10_Knowledge/References'), { recursive: true });
+  fs.symlinkSync(outside, path.join(vault, '90_Archive/10_Knowledge/References'));
+  const u = undoArchive(vault, [p.id], { now: LATER });
+  assert.equal(u.restored.length, 0);
+  assert.match(u.refused[0].reason, /심볼릭/);
+  assert.ok(fs.existsSync(path.join(outside, 'A/x.md')));
+});
+
+test('[archive/r1] a half-finished move is also held back when links now point at the old path', () => {
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/x.md');
+  fs.mkdirSync(path.join(vault, '90_Archive/10_Knowledge/References/A'), { recursive: true });
+  fs.linkSync(path.join(vault, '10_Knowledge/References/A/x.md'), path.join(vault, '90_Archive/10_Knowledge/References/A/x.md'));
+  note(vault, '2026-11-01.md', '[[10_Knowledge/References/A/x]]\n');
+  const [r] = planArchive(vault, [approvedDrop(vault, '10_Knowledge/References/A/x.md')]);
+  assert.equal(r.status, 'blocked');
+});
+
+test('[archive/r1] a move that finished but was not recorded (crash) is recovered into the ledger, so undo works', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, '10_Knowledge/References/A/x.md', 'x\n');
+  const p = approvedDrop(vault, '10_Knowledge/References/A/x.md');
+  const [row] = planArchive(vault, [p]);
+  // simulate: intent recorded, file moved, crash before the ledger said 'moved'
+  const crypto = await import('node:crypto');
+  const hash = crypto.createHash('sha256').update('x\n').digest('hex');
+  fs.mkdirSync(path.join(vault, '_attic/archive'), { recursive: true });
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify([{ proposalId: p.id, from: row.from, to: row.to, sha256: hash, status: 'moving', startedAt: LATER.toISOString() }]));
+  fs.mkdirSync(path.dirname(path.join(vault, row.to)), { recursive: true });
+  fs.renameSync(path.join(vault, row.from), path.join(vault, row.to));
+  const r = await runArchive(ctx, { now: LATER });
+  assert.equal(r.already.length, 1);
+  assert.equal(readArchiveLedger(vault)[0].status, 'moved');
+  const u = undoArchive(vault, [p.id], { now: LATER });
+  assert.equal(u.restored.length, 1);
 });

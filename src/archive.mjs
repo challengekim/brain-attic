@@ -66,7 +66,21 @@ function walkMd(vault) {
 }
 
 const WIKI = /!?\[\[([^\]\n]+?)\]\]/g;
-const MDLINK = /\]\((<[^>\n]+>|[^)\s]+)/g;
+const REFDEF = /^\s{0,3}\[[^\]\n]+\]:\s*(.*)$/;
+
+/**
+ * The text a markdown link could point with on this line: everything after each `](` and a reference definition's
+ * target (`[r]: path.md`). Deliberately loose (the rest of the line, parentheses and all): a markdown link we fail to
+ * parse must not turn into a false "safe to move".
+ */
+function mdLinkTails(line) {
+  const out = [];
+  let i = line.indexOf('](');
+  while (i >= 0) { out.push(line.slice(i + 2)); i = line.indexOf('](', i + 2); }
+  const ref = REFDEF.exec(line);
+  if (ref) out.push(ref[1]);
+  return out;
+}
 
 /**
  * One pass over every note: which of `files` other notes link to, and how.
@@ -91,13 +105,18 @@ export function linkIndex(vault, files) {
     for (const f of byName.get(n) || []) if (rel !== f) want.get(f).sameName++;
   }
   const byPath = new Map(files.map((f) => [noExt(f).toLowerCase(), f]));
+  // How a markdown link may spell each file's name: as is, or URL-encoded (spaces as %20, or everything encoded).
+  const needles = new Map(files.map((f) => {
+    const b = path.posix.basename(f);
+    return [f, [...new Set([b, encodeURI(b), encodeURIComponent(b), b.replace(/ /g, '%20')].map((x) => x.toLowerCase()))]];
+  }));
+  // Every note is a link source, the candidates too (one candidate may link another); only a note's links to itself are ignored.
   for (const rel of all) {
-    if (want.has(rel)) continue;
     let text;
     try { text = fs.readFileSync(path.join(vault, rel), 'utf8'); } catch { continue; }
-    if (!text.includes('[[') && !text.includes('](') && !files.some((f) => text.includes(f))) continue;
+    if (!text.includes('[[') && !text.includes('](') && !text.includes(']:') && !files.some((f) => text.includes(f))) continue;
     const inAttic = rel.startsWith('_attic/');
-    const hit = (f, kind) => { const w = want.get(f); if (inAttic) w.attic++; else { w[kind]++; if (w.from.length < 5 && !w.from.includes(rel)) w.from.push(rel); } };
+    const hit = (f, kind) => { if (f === rel) return; const w = want.get(f); if (inAttic) w.attic++; else { w[kind]++; if (w.from.length < 5 && !w.from.includes(rel)) w.from.push(rel); } };
     for (const m of text.matchAll(WIKI)) {
       const target = m[1].split('|')[0].split('#')[0].split('^')[0].trim().replace(/\.md$/i, '').replace(/^\/+/, '');
       if (!target) continue;
@@ -106,18 +125,15 @@ export function linkIndex(vault, files) {
         for (const [p, f] of byPath) if (p === t || p.endsWith('/' + t)) hit(f, 'path');
       } else for (const f of byName.get(target.toLowerCase()) || []) hit(f, 'name');
     }
-    for (const m of text.matchAll(MDLINK)) {
-      let url = m[1].replace(/^<|>$/g, '');
-      if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('#')) continue;
-      try { url = decodeURIComponent(url.split('#')[0]); } catch { url = url.split('#')[0]; }
-      if (!url) continue;
-      const cands = [path.posix.normalize(path.posix.join(path.posix.dirname(rel), url)), path.posix.normalize(url.replace(/^\/+/, ''))];
-      for (const c of cands) {
-        const f = byPath.get(noExt(c).toLowerCase());
-        if (f) { hit(f, 'md'); break; }
+    if (text.includes('](') || text.includes(']:')) {
+      for (const line of text.split('\n')) {
+        for (const tail of mdLinkTails(line)) {
+          const t = tail.toLowerCase();
+          for (const [f, ns] of needles) if (ns.some((n) => t.includes(n))) hit(f, 'md');
+        }
       }
     }
-    if (!inAttic) for (const f of files) if (text.includes(f)) want.get(f).pathMentions++;
+    if (!inAttic) for (const f of files) if (f !== rel && text.includes(f)) want.get(f).pathMentions++;
   }
   return want;
 }
@@ -125,7 +141,7 @@ export function linkIndex(vault, files) {
 /** Why links block a move (null = they survive it). */
 function linkBlock(l) {
   if (l.path) return `다른 노트가 경로 링크([[폴더/…]]) ${l.path}개로 가리킴 — 옮기면 깨질 수 있음 (${l.from.join(', ')})`;
-  if (l.md) return `다른 노트가 마크다운 경로 링크 ${l.md}개로 가리킴 — 옮기면 깨짐 (${l.from.join(', ')})`;
+  if (l.md) return `다른 노트의 마크다운 링크 ${l.md}개가 이 파일 이름을 가리킴 — 옮기면 깨질 수 있음 (${l.from.join(', ')})`;
   if (l.name && l.sameName) return `같은 이름의 노트가 ${l.sameName}개 더 있어 [[이름]] 링크 ${l.name}개가 다른 노트로 갈 수 있음`;
   return null;
 }
@@ -168,7 +184,7 @@ export function planArchive(vault, proposals = null, { index = null } = {}) {
       const l = idx.get(r.from);
       if (!l) continue;
       r.links = { name: l.name, path: l.path, md: l.md, attic: l.attic, pathMentions: l.pathMentions, sameName: l.sameName };
-      const why = r.status === 'ready' ? linkBlock(l) : null;
+      const why = linkBlock(l); // a half-finished move too: removing the old entry would break the same links
       if (why) { r.status = 'blocked'; r.reason = why; }
     }
   }
@@ -198,8 +214,23 @@ function closeProposal(vault, id, to, now, extra = {}) {
   saveProposal(vault, p);
 }
 
-/** Move one planned row (status ready or half). Returns { ok, error? }. */
-export function moveOne(vault, row, now = new Date()) {
+/**
+ * Remove the old directory entry only if it is still the very file now at the archive path. Renaming it aside first is
+ * atomic, so an editor that saved a NEW file at the old path in the meantime gets that file back (never deleted).
+ */
+function removeOldEntry(fa, ta) {
+  const aside = path.join(path.dirname(fa), `.attic-archiving-${process.pid}-${crypto.randomBytes(4).toString('hex')}.md`);
+  fs.renameSync(fa, aside);
+  const a = fs.lstatSync(aside), t = fs.lstatSync(ta);
+  if (a.ino === t.ino && a.dev === t.dev) { fs.unlinkSync(aside); return; }
+  // Not our file any more (saved anew): put it back where it was. If yet another file appeared there, keep it aside.
+  try { fs.linkSync(aside, fa); fs.unlinkSync(aside); }
+  catch { throw new Error(`이동 중 원래 자리에 새로 저장된 파일이 있어 ${path.basename(aside)} 로 남겨 둠 — 직접 확인 필요`); }
+  throw new Error('이동 중 원래 자리의 노트가 새로 저장됨 — 그 노트는 그대로 두고, 보관 폴더에는 이전 내용이 남음');
+}
+
+/** Move one planned row (status ready or half). Returns { ok, error? }. opts.beforeUnlink: test hook. */
+export function moveOne(vault, row, now = new Date(), opts = {}) {
   const fa = path.join(vault, row.from), ta = path.join(vault, row.to);
   const ledger = readArchiveLedger(vault);
   const hash = sha(fa);
@@ -214,17 +245,31 @@ export function moveOne(vault, row, now = new Date()) {
       fs.linkSync(fa, ta);
     }
     if (sha(ta) !== hash) throw new Error('보관본 해시가 원본과 다름 — 원본을 지우지 않음');
-    fs.unlinkSync(fa);
-    if (fs.existsSync(fa) || !fs.existsSync(ta)) throw new Error('이동 뒤 확인 실패');
-    entry.status = 'moved'; entry.movedAt = now.toISOString();
-    saveLedger(vault, ledger);
-    closeProposal(vault, row.id, row.to, now);
-    return { ok: true };
+    opts.beforeUnlink?.();
+    removeOldEntry(fa, ta);
+    if (fs.existsSync(fa) || !fs.existsSync(ta) || sha(ta) !== hash) throw new Error('이동 뒤 확인 실패');
   } catch (e) {
     entry.status = 'failed'; entry.error = e.message;
     saveLedger(vault, ledger);
     return { ok: false, error: e.message };
   }
+  entry.status = 'moved'; entry.movedAt = now.toISOString();
+  saveLedger(vault, ledger);
+  // The note has moved and the ledger says so; a failure closing the card is retried by the next run (status already).
+  try { closeProposal(vault, row.id, row.to, now); } catch (e) { return { ok: false, error: `옮겼지만 제안을 닫지 못함: ${e.message}` }; }
+  return { ok: true };
+}
+
+/**
+ * A note already at the archive path and gone from its place. When our own move did that but stopped before the ledger
+ * said 'moved' (crash, or closing the card failed), the ledger entry is recovered (same hash) so undo still works.
+ */
+export function closeAlready(vault, row, now = new Date()) {
+  const ledger = readArchiveLedger(vault);
+  const mine = ledger.filter((e) => e.proposalId === row.id && e.from === row.from && e.to === row.to);
+  const ours = !mine.some((e) => e.status === 'moved') && [...mine].reverse().find((e) => ['moving', 'failed'].includes(e.status) && e.sha256 === sha(path.join(vault, row.to)));
+  if (ours) { ours.status = 'moved'; ours.movedAt = now.toISOString(); ours.recovered = true; delete ours.error; saveLedger(vault, ledger); }
+  closeProposal(vault, row.id, row.to, now, ours || mine.some((e) => e.status === 'moved') ? {} : { archivedBefore: true });
 }
 
 /**
@@ -240,7 +285,7 @@ export async function runArchive(ctx, { dryRun = false, limit = Infinity, now = 
   const out = { plan, moved: [], already: [], skipped: [], errors: [] };
   if (dryRun) return out;
   for (const r of plan) {
-    if (r.status === 'already') { closeProposal(vault, r.id, r.to, now, { archivedBefore: true }); out.already.push(r); continue; }
+    if (r.status === 'already') { closeAlready(vault, r, now); out.already.push(r); continue; }
     if (!['ready', 'half'].includes(r.status)) { out.skipped.push(r); continue; }
     if (out.moved.length >= limit) { out.skipped.push({ ...r, reason: '이번 실행 상한(--limit) 밖' }); continue; }
     const m = moveOne(vault, r, now);
@@ -257,7 +302,8 @@ export function undoArchive(vault, ids, { now = new Date() } = {}) {
   if (ids !== 'all') for (const id of ids) if (!targets.some((e) => e.proposalId === id)) out.refused.push({ proposalId: id, reason: '옮긴 기록이 없음' });
   for (const e of targets) {
     const fa = path.join(vault, e.from), ta = path.join(vault, e.to);
-    const why = badSource(vault, e.from) || (!fs.existsSync(ta) ? '보관본이 없음'
+    const why = badSource(vault, e.from) || (e.to !== archiveTarget(e.from) ? '원장의 보관 경로가 규칙과 다름' : null) || symlinkOnTarget(vault, e.to)
+      || (!fs.existsSync(ta) ? '보관본이 없음'
       : fs.existsSync(fa) ? '원 경로에 이미 다른 파일이 있음' : sha(ta) !== e.sha256 ? '보관본이 옮긴 뒤 바뀜' : null);
     if (why) { out.refused.push({ proposalId: e.proposalId, from: e.from, reason: why }); continue; }
     fs.mkdirSync(path.dirname(fa), { recursive: true });

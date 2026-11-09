@@ -10,7 +10,7 @@ import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
 import { applyTry } from './todo.mjs';
 import { addRule } from './feedback.mjs';
-import { linkIndex, moveOne, planArchive } from './archive.mjs';
+import { closeAlready, linkIndex, moveOne, planArchive } from './archive.mjs';
 
 export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule', 'archive_note'];
 
@@ -89,7 +89,7 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
         // Move to 90_Archive/<same path>; never overwrite, never delete; a note other notes reach by path stays put.
         const row = archiveRow(p);
         if (row?.status === 'already') {
-          p.status = 'applied'; p.appliedAt = now.toISOString(); p.archivedTo = row.to; p.archivedBefore = true; saveProposal(vault, p);
+          closeAlready(vault, row, now);
           result.applied.push({ id: p.id, op, already: true });
         } else if (row && ['ready', 'half'].includes(row.status)) {
           const m = moveOne(vault, row, now);
