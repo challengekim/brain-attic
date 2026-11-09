@@ -10,7 +10,7 @@ import { atticPath, ensureSkeleton } from '../src/vault.mjs';
 import { createProposal, decide, reclassify, saveProposal, getProposal, withdraw } from '../src/proposals.mjs';
 import { decisionOf, buildLedger, weeklyMetrics, guideFor, readRules, recordReason, ruleDescriptors, uncoveredDisagreements, renderMetrics } from '../src/feedback.mjs';
 import { buildPrompt, triageInputKey } from '../src/triage.mjs';
-import { buildDescriptors } from '../src/review.mjs';
+import { buildDescriptors, renderSheet, review } from '../src/review.mjs';
 import { apply } from '../src/apply.mjs';
 import { compute, renderRetro } from '../src/retro.mjs';
 
@@ -182,4 +182,32 @@ test('retro shows the weekly agreement rate', () => {
   const md = renderRetro(r, [], true);
   assert.match(md, /추천 일치율/);
   assert.match(md, /2026-W45 \| 5 \| 1 \| 20%/);
+});
+
+test('[review P2] a class picked with `attic reclassify` counts, also while pending and after silence approves it', () => {
+  const ctx = ctxWithVault();
+  const p = createProposal(ctx.vault, { ...teach('cli picked b'), source: 'review' }, T0).proposal;
+  reclassify(ctx.vault, p.id, 'b', { by: 'cli', now: LATER });
+  assert.deepEqual(decisionOf(getProposal(ctx.vault, p.id)), { recommended: 'c', final: 'b', agreed: false });
+  saveProposal(ctx.vault, { ...getProposal(ctx.vault, p.id), status: 'approved', decidedBy: 'auto', autoApplied: true });
+  assert.deepEqual(decisionOf(getProposal(ctx.vault, p.id)), { recommended: 'c', final: 'b', agreed: false });
+});
+
+test('[review P2] b/d off: an overdue unanswered b card is withdrawn, not auto-approved into an instruction file', async () => {
+  const ctx = ctxWithVault({ config: { triage: { include: [] }, llm: { runner: 'claude', model: null, timeoutMs: 20000 }, notifiers: [] } });
+  const old = new Date('2026-10-20T12:00:00+09:00');
+  const b = createProposal(ctx.vault, { ...auto('overdue b'), source: 'review' }, old).proposal;
+  const kept = createProposal(ctx.vault, { ...teach('overdue c'), source: 'review' }, old).proposal;
+  await review(ctx, { now: LATER });
+  assert.equal(getProposal(ctx.vault, b.id).status, 'withdrawn');
+  assert.ok(!fs.existsSync(atticPath(ctx.vault, 'approved', `${b.id}.prompt.md`)));
+  // classification cards that are still on (c -> queue_teach) keep the 7-day rule
+  assert.equal(getProposal(ctx.vault, kept.id).autoApplied, true);
+});
+
+test('[review P2] the sheet lists d items even with d cards off', () => {
+  const tri = { items: [{ id: 'i1', class: 'd', title: 'Drop me', file: 'Refs/x.md', reason: '중복' }], counts: { a: 0, b: 0, c: 0, d: 1, unclassified: 0 }, usedMinutes: 0, weeklyMinutes: null, demoted: 0, errors: [] };
+  const sheet = renderSheet({ vault: ctxWithVault().vault, week: '2026-W46', tri, aud: { suggestions: [], models: {}, tools: {}, scannedFiles: 0 }, events: [], descriptors: [], dryRun: true, nowIso: 'x', autoCards: false });
+  assert.match(sheet, /### d — 버릴 후보 .*카드로 올리지 않음/);
+  assert.match(sheet, /Drop me/);
 });
