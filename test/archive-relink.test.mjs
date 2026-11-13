@@ -265,3 +265,99 @@ test('[relink/r1] an undo whose link restore failed is retried by the next run',
   assert.ok(e.unrelinkedAt);
   assert.equal(e.unrelinkError, undefined);
 });
+
+// ---------------------------------------------------------------- Codex round 2 (P1 ×3, P2 journal)
+test('[relink/r2] fences close only on a long-enough fence of the same char; only a real single-backtick span is a path', () => {
+  const text = [
+    '````', '```', `[[${P}]]`, '````',
+    `example \`\`see \`${F}\` here\`\` · \`[[${P}]]\``,
+    `ok: \`${F}\` [[${P}|t]]`, '',
+  ].join('\n');
+  const r = rewriteRefs(text, F, `90_Archive/${F}`);
+  assert.equal(r.count, 2);
+  assert.equal(r.text, text.replace(`ok: \`${F}\` [[${P}|t]]`, `ok: \`90_Archive/${F}\` [[${A}|t]]`));
+});
+
+function raceDir() {
+  const dir = fs.mkdtempSync(path.join(testCtx().vault, 'race-'));
+  const abs = path.join(dir, 'n.md');
+  fs.writeFileSync(abs, 'old\n');
+  return { dir, abs, raw: fs.readFileSync(abs) };
+}
+const leftovers = (dir) => fs.readdirSync(dir).filter((n) => n.startsWith('.attic-'));
+const conflicts = (dir) => fs.readdirSync(dir).filter((n) => n.includes('충돌'));
+
+test('[relink/r2] original edited in place, then a NEW file saved at the path: both survive (newest at the path, the other as a conflict note)', () => {
+  const { dir, abs, raw } = raceDir();
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, null, {
+    afterAside: (aside) => fs.writeFileSync(aside, 'save 1\n'),
+    afterLink: () => { fs.writeFileSync(path.join(dir, 'x.tmp'), 'save 2\n'); fs.renameSync(path.join(dir, 'x.tmp'), abs); },
+  }));
+  assert.equal(fs.readFileSync(abs, 'utf8'), 'save 2\n');
+  assert.equal(conflicts(dir).length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), 'save 1\n');
+  assert.deepEqual(leftovers(dir), []);
+});
+
+test('[relink/r2] original edited in place, then OUR new file edited in place: neither edit is lost', () => {
+  const { dir, abs, raw } = raceDir();
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, null, {
+    afterAside: (aside) => fs.writeFileSync(aside, 'save 1\n'),
+    afterLink: () => fs.writeFileSync(abs, 'save 2\n'),
+  }));
+  assert.equal(fs.readFileSync(abs, 'utf8'), 'save 2\n');
+  assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), 'save 1\n');
+  assert.deepEqual(leftovers(dir), []);
+});
+
+test('[relink/r2] when neither our file nor the original can be put at the path, the journal is kept for recovery', (t) => {
+  if (process.getuid?.() === 0) return t.skip('root ignores directory permissions');
+  const { dir, abs, raw } = raceDir();
+  const calls = [];
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, (j) => calls.push(j), {
+    afterAside: () => fs.chmodSync(dir, 0o555),
+  }));
+  fs.chmodSync(dir, 0o755);
+  assert.ok(calls.at(-1), 'journal must not be cleared');
+  assert.equal(fs.readFileSync(calls.at(-1).aside, 'utf8'), 'old\n');
+});
+
+test('[relink/r2] recovery never overwrites a note the user edited after a crash (same inode as our temp file)', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const ent = path.join(vault, '_system/entities/넥덕.md');
+  const ours = fs.readFileSync(ent, 'utf8');
+  // crash state: our text at the path AND under the temp name (same inode), an edited original aside
+  fs.linkSync(ent, path.join(vault, '_system/entities/.attic-relink-abc.tmp'));
+  fs.writeFileSync(path.join(vault, '_system/entities/.attic-relink-abc.orig'), ENTITY + '- 원본에 쓴 메모\n');
+  fs.writeFileSync(ent, ours + '- 지금 노트에 쓴 메모\n'); // in place: same inode as the temp name
+  const led = readArchiveLedger(vault);
+  const e = led.find((x) => x.proposalId === p.id);
+  const h = (s) => crypto.createHash('sha256').update(s).digest('hex');
+  e.relinkAside = { file: '_system/entities/넥덕.md', aside: '_system/entities/.attic-relink-abc.orig', tmp: '_system/entities/.attic-relink-abc.tmp', sha256: h(ENTITY), newSha256: h(ours) };
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify(led));
+  finishRelinks(vault, LATER);
+  assert.equal(read(vault, '_system/entities/넥덕.md'), ours + '- 지금 노트에 쓴 메모\n');
+  const dir = path.join(vault, '_system/entities');
+  assert.equal(conflicts(dir).length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), ENTITY + '- 원본에 쓴 메모\n');
+  assert.deepEqual(leftovers(dir), []);
+});
+
+test('[relink/r3] a backtick run left open on a line may span lines: `path` after it in that paragraph is left alone', () => {
+  const t = 'x `` a\n`' + F + '` b ``\n\n`' + F + '`';
+  const r = rewriteRefs(t, F, A + '.md');
+  assert.equal(r.count, 1);
+  assert.equal(r.text, 'x `` a\n`' + F + '` b ``\n\n`' + A + '.md`');
+});
+
+test('[relink/r3] an open run ends with its list item, and backticks inside a [[wikilink]] are the link\'s text', () => {
+  const t = '- [[a `b]] — x\n  `c\n- `' + F + '` — t\n- [[d `e]] `' + F + '`';
+  const r = rewriteRefs(t, F, A + '.md');
+  assert.equal(r.count, 2);
+  assert.equal(r.text, '- [[a `b]] — x\n  `c\n- `' + A + '.md` — t\n- [[d `e]] `' + A + '.md`');
+});

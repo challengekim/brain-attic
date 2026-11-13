@@ -68,46 +68,85 @@ export function copyIntoAttic(vault, rel, srcFile) {
   return true;
 }
 
-/** Per-vault random id (created once). Proposal ids derive from it so they cannot collide with another vault's. */
-/**
- * The one write brain-attic makes to a note outside _attic/ (archive relink, src/archive.mjs, which checks the path):
- * put `text` at `abs` if it still holds exactly `raw`, never losing an editor's save made meanwhile:
- *   1. write a fresh temp file (wx) next to it;           2. rename the original aside (atomic; journaled first);
- *   3. link the temp file to the path — no clobber: a file an editor saved there meanwhile wins (ours is dropped);
- *   4. compare the set-aside original with `raw`: written in place meanwhile -> it goes back over ours.
- * Throws in those two cases (nothing of ours is left). `journal({ tmp, aside })` is called before step 2 and
- * `journal(null)` when done, so a crash in between can be settled (archive.mjs settleRelinkAside). hooks: tests only.
- */
-export function replaceNoteIfUnchanged(abs, raw, text, mode = 0o644, journal = null, hooks = {}) {
-  const tag = crypto.randomBytes(6).toString('hex');
-  const tmp = path.join(path.dirname(abs), `.attic-relink-${tag}.tmp`);
-  const aside = path.join(path.dirname(abs), `.attic-relink-${tag}.orig`);
-  const drop = (p) => { try { fs.unlinkSync(p); } catch { /* gone */ } };
-  fs.writeFileSync(tmp, text, { flag: 'wx', mode });
-  journal?.({ tmp, aside });
-  try { fs.renameSync(abs, aside); } catch (e) { drop(tmp); journal?.(null); throw e; }
-  hooks.afterAside?.();
-  try { fs.linkSync(tmp, abs); } catch (e) {
-    if (e.code === 'EEXIST') {
-      // An editor saved a new file at the path: it is newer than the original we set aside (drop that if unchanged).
-      if (fs.readFileSync(aside).equals(raw)) drop(aside);
-      drop(tmp); journal?.(null);
-      if (fs.existsSync(aside)) throw new Error(`고치는 사이에 노트가 새로 저장됨 — 새 노트는 그대로 두고, 바뀐 원본은 ${path.basename(aside)} 에 남김`);
-      throw new Error('고치는 사이에 노트가 새로 저장됨 — 새 노트는 그대로 두고 다음 실행 때 다시 고침');
-    }
-    try { fs.renameSync(aside, abs); } catch { /* left aside: settled from the journal */ }
-    drop(tmp); journal?.(null);
-    throw e;
-  }
-  hooks.afterLink?.(aside);
-  if (!fs.readFileSync(aside).equals(raw)) {
-    fs.renameSync(aside, abs); // their in-place edit goes back over ours
-    drop(tmp); journal?.(null);
-    throw new Error('고치는 사이에 노트가 바뀜 — 바뀐 내용을 그대로 두고 다음 실행 때 다시 고침');
-  }
-  drop(aside); drop(tmp); journal?.(null);
+const sameBytes = (p, buf) => { try { return fs.readFileSync(p).equals(buf); } catch { return false; } };
+const dropName = (p) => { try { fs.unlinkSync(p); } catch { /* gone */ } };
+const relinkTag = () => crypto.randomBytes(6).toString('hex');
+
+/** Put the file named `src` at `abs` without overwriting anything there (hard link, then drop the src name). false = taken. */
+export function placeNoClobber(src, abs) {
+  try { fs.linkSync(src, abs); } catch (e) { if (e.code === 'EEXIST') return false; throw e; }
+  fs.unlinkSync(src);
+  return true;
 }
 
+/**
+ * Free `abs` only if it still holds exactly `isOurs(bytes)`: renamed away first (atomic), checked by CONTENT, and put
+ * back without overwriting if it is not ours. true = the path is free now; false = someone else's file is there.
+ */
+export function takeBackIfOurs(abs, isOurs) {
+  const q = path.join(path.dirname(abs), `.attic-relink-${relinkTag()}.take`);
+  try { fs.renameSync(abs, q); } catch (e) { if (e.code === 'ENOENT') return true; throw e; }
+  if (isOurs(fs.readFileSync(q))) { fs.unlinkSync(q); return true; }
+  if (placeNoClobber(q, abs)) return false;
+  throw new Error(`노트를 제자리에 돌려놓지 못함 — ${path.basename(q)} 에 남아 있음, 직접 확인 필요`);
+}
+
+/** Keep a file as a visible note next to `abs` («<이름> (보관 링크 충돌 <tag>).md»), never overwriting. Returns its name. */
+export function keepAsConflict(src, abs) {
+  const base = path.basename(abs).replace(/\.md$/i, '');
+  for (;;) {
+    const c = path.join(path.dirname(abs), `${base} (보관 링크 충돌 ${relinkTag()}).md`);
+    if (placeNoClobber(src, c)) return path.basename(c);
+  }
+}
+
+/**
+ * The one write brain-attic makes to a note outside _attic/ (archive relink, src/archive.mjs, which checks the path):
+ * put `text` at `abs` if it still holds exactly `raw`. Nothing is ever renamed onto an existing file and no bytes we
+ * cannot prove are ours are dropped, so an editor's save made meanwhile is never lost:
+ *   1. write a fresh temp file (wx);  2. journal, then rename the original aside (atomic);
+ *   3. link ours to the path without overwriting — an editor's new file there wins;
+ *   4. the original set aside was edited in place meanwhile -> take ours back only if its content is still ours and
+ *      put the edited original at the path (no overwrite); if both sides changed, the edited original is kept as a
+ *      visible conflict note next to it.
+ * Throws whenever ours did not end up at the path (the caller retries later). `journal({ tmp, aside })` before step 2,
+ * `journal(null)` only once the files are consistent again; a crash in between is settled by settleRelinkAside
+ * (archive.mjs). hooks: tests only.
+ */
+export function replaceNoteIfUnchanged(abs, raw, text, mode = 0o644, journal = null, hooks = {}) {
+  const tag = relinkTag();
+  const tmp = path.join(path.dirname(abs), `.attic-relink-${tag}.tmp`);
+  const aside = path.join(path.dirname(abs), `.attic-relink-${tag}.orig`);
+  const ours = Buffer.from(text, 'utf8');
+  fs.writeFileSync(tmp, ours, { flag: 'wx', mode });
+  journal?.({ tmp, aside });
+  try { fs.renameSync(abs, aside); } catch (e) { dropName(tmp); journal?.(null); throw e; }
+  hooks.afterAside?.(aside);
+  // The path holds someone's newer file: the original aside goes away if unchanged, else it stays as a conflict note.
+  const yieldTo = (why) => {
+    dropName(tmp);
+    if (sameBytes(aside, raw)) { dropName(aside); journal?.(null); throw new Error(`${why} — 새 노트는 그대로 두고 다음 실행 때 다시 고침`); }
+    const c = keepAsConflict(aside, abs);
+    journal?.(null);
+    throw new Error(`${why} — 새 노트는 그대로 두고, 그 전에 바뀐 내용은 «${c}» 로 남김`);
+  };
+  let placed;
+  try { placed = placeNoClobber(tmp, abs); } catch (e) {
+    // Ours could not be linked: put the original back (no overwrite). If that fails too the journal stays.
+    if (placeNoClobber(aside, abs)) { dropName(tmp); journal?.(null); }
+    throw e;
+  }
+  if (!placed) yieldTo('고치는 사이에 노트가 새로 저장됨');
+  hooks.afterLink?.(aside);
+  if (sameBytes(aside, raw)) { dropName(aside); journal?.(null); return; }
+  // The original was edited in place before we set it aside: that edit wins over our rewrite.
+  if (!takeBackIfOurs(abs, (b) => b.equals(ours))) yieldTo('고치는 사이에 노트가 바뀌고 새로 저장됨');
+  if (!placeNoClobber(aside, abs)) yieldTo('고치는 사이에 노트가 바뀌고 새로 저장됨');
+  journal?.(null);
+  throw new Error('고치는 사이에 노트가 바뀜 — 바뀐 내용을 그대로 두고 다음 실행 때 다시 고침');
+}
+
+/** Per-vault random id (created once). Proposal ids derive from it so they cannot collide with another vault's. */
 export function getInstanceId(vault) {
   const rel = 'state/instance.json';
   const cur = readJson(atticPath(vault, rel), null);

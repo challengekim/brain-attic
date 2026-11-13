@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { requireVault } from './config.mjs';
-import { atticPath, atticWritePath, ensureSkeleton, replaceNoteIfUnchanged, writeAtticJson } from './vault.mjs';
+import { atticPath, atticWritePath, ensureSkeleton, keepAsConflict, placeNoClobber, replaceNoteIfUnchanged, takeBackIfOurs, writeAtticJson } from './vault.mjs';
 import { readJson } from './util.mjs';
 import { getProposal, isApplicable, listProposals, saveProposal } from './proposals.mjs';
 
@@ -75,44 +75,80 @@ const WIKI = /!?\[\[([^\]\n]+?)\]\]/g;
 function wikiTarget(inner) {
   return inner.split(/[|#^]/)[0].replace(/\\$/, '').trim().replace(/\.md$/i, '').replace(/^\/+/, '');
 }
-const FENCE = /^\s{0,3}(```|~~~)/;
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+const BLOCK_START = /^ {0,3}([-*+]|\d{1,9}[.)])(\s|$)|^ {0,3}#{1,6}(\s|$)|^ {0,3}>/; // list item, heading, quote
+
+/**
+ * Inline code spans of one line (CommonMark: a backtick run closes at the next run of the same length).
+ * `open` = a run is left unclosed, so a span may go on across the next lines.
+ * Backticks inside a [[wikilink]] are the link's text and are skipped.
+ */
+function codeSpans(line, wikis = []) {
+  // a backtick inside a [[wikilink]] is part of the link's text, not a code delimiter
+  const runs = [...line.matchAll(/`+/g)].filter((m) => !wikis.some((w) => m.index > w.s && m.index < w.e)).map((m) => ({ s: m.index, n: m[0].length }));
+  const out = [];
+  let open = false;
+  for (let k = 0; k < runs.length; k++) {
+    const c = runs.findIndex((r, j) => j > k && r.n === runs[k].n);
+    if (c < 0) { open = true; continue; }
+    out.push({ s: runs[k].s, e: runs[c].s + runs[c].n, n: runs[k].n, inner: line.slice(runs[k].s + runs[k].n, runs[c].s) });
+    k = c;
+  }
+  return { spans: out, open };
+}
 
 /**
  * Rewrite the references to one note's full vault path from `fromRel` to `toRel` (both .md paths), and nothing else:
  *   - [[wikilinks]] whose target is exactly that path (with or without .md or a leading /): only the target changes,
  *     the alias, heading, block, embed ! and a table's \| stay;
- *   - the .md path written as an inline code span exactly (`` `10_Knowledge/…/x.md` ``, the wiki index's form),
- *     outside any [[wikilink]] — so `90_Archive/<path>`, `<path> 2.md` or `x/<path>` are never touched.
- * Fenced code blocks, bare text, URLs, other notes' links and aliases, partial or case-differing paths and markdown
- * links are not touched (the last three block the move instead). Reversible: rewriteRefs(rewriteRefs(t, a, b).text,
+ *   - an inline code span that is exactly that .md path (`` `10_Knowledge/…/x.md` ``, the wiki index's form).
+ * Untouched: fenced code blocks (closed only by the same char, at least as long), other code spans (and wikilinks
+ * inside them), any `path` on a line where a backtick run left open earlier in the same block may still be
+ * spanning (stays a stale mention), code spans inside a wikilink, bare text, URLs, other notes' links and aliases. Partial or
+ * case-differing paths and markdown links block the move instead. Reversible: rewriteRefs(rewriteRefs(t, a, b).text,
  * b, a) gives t back unless t already spelled b. Returns { text, count }.
  */
 export function rewriteRefs(text, fromRel, toRel) {
   const a = noExt(fromRel), b = noExt(toRel);
-  const spanFrom = '`' + fromRel + '`', spanTo = '`' + toRel + '`';
   let count = 0;
-  let fence = null; // the open fence's marker
-  const plain = (seg) => {
-    const parts = seg.split(spanFrom);
-    count += parts.length - 1;
-    return parts.join(spanTo);
-  };
+  let fence = null; // the open fence: { ch, len }
+  let spanOpen = false; // an unclosed backtick run earlier in this paragraph: code spans here are not trusted
   const lines = text.split('\n').map((line) => {
-    const f = FENCE.exec(line);
-    if (f) { if (!fence) fence = f[1]; else if (f[1] === fence) fence = null; return line; }
-    if (fence || (!line.includes(a))) return line;
-    let out = '', last = 0;
-    for (const m of line.matchAll(WIKI)) {
-      out += plain(line.slice(last, m.index));
-      const inner = m[1];
-      if (wikiTarget(inner) === a) {
-        const i = inner.indexOf(a); // only blanks and slashes can come before it
-        count++;
-        out += m[0].slice(0, m[0].indexOf('[[') + 2) + inner.slice(0, i) + b + inner.slice(i + a.length) + ']]';
-      } else out += m[0];
-      last = m.index + m[0].length;
+    const f = FENCE_OPEN.exec(line);
+    if (fence) {
+      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) fence = null;
+      return line;
     }
-    return out + plain(line.slice(last));
+    if (f && !(f[1][0] === '`' && line.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; }
+    if (!line.trim() || BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
+    if (!line.trim()) return line;
+    const wikis = [...line.matchAll(WIKI)].map((m) => ({ s: m.index, e: m.index + m[0].length, m }));
+    const { spans, open } = codeSpans(line, wikis);
+    const codeOk = !spanOpen && !open; // a span crossing lines may hide `path` inside a longer span: leave those alone
+    spanOpen = spanOpen || open;
+    if (!line.includes(a)) return line;
+    const inside = (x, ys) => ys.some((y) => x.s >= y.s && x.e <= y.e);
+    const overlaps = (x, ys) => ys.some((y) => x.s < y.e && y.s < x.e);
+    // A code span inside a wikilink is part of that link's text; a wikilink inside a code span is code, not a link.
+    const items = [
+      ...wikis.filter((w) => !inside(w, spans) && !spans.some((sp) => overlaps(w, [sp]) && !inside(sp, [w]))).map((w) => ({ ...w, kind: 'wiki' })),
+      ...spans.filter((sp) => !inside(sp, wikis) && !overlaps(sp, wikis)).map((sp) => ({ ...sp, kind: 'code' })),
+    ].sort((x, y) => x.s - y.s);
+    let out = '', last = 0;
+    for (const it of items) {
+      out += line.slice(last, it.s);
+      const orig = line.slice(it.s, it.e);
+      if (it.kind === 'wiki') {
+        const inner = it.m[1];
+        if (wikiTarget(inner) === a) {
+          const i = inner.indexOf(a); // only blanks and slashes can come before it
+          count++;
+          out += orig.slice(0, orig.indexOf('[[') + 2) + inner.slice(0, i) + b + inner.slice(i + a.length) + ']]';
+        } else out += orig;
+      } else if (codeOk && it.n === 1 && it.inner === fromRel) { count++; out += '`' + toRel + '`'; } else out += orig;
+      last = it.e;
+    }
+    return out + line.slice(last);
   });
   return { text: lines.join('\n'), count };
 }
@@ -370,8 +406,9 @@ function rewriteNote(vault, rel, fromRel, toRel, entry = null, ledger = null) {
   const r = rewriteRefs(text, fromRel, toRel);
   if (!r.count) return 0;
   const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  const newHash = crypto.createHash('sha256').update(r.text, 'utf8').digest('hex');
   const journal = entry && ((j) => {
-    if (j) entry.relinkAside = { file: rel, tmp: posix(path.relative(vault, j.tmp)), aside: posix(path.relative(vault, j.aside)), sha256: hash };
+    if (j) entry.relinkAside = { file: rel, tmp: posix(path.relative(vault, j.tmp)), aside: posix(path.relative(vault, j.aside)), sha256: hash, newSha256: newHash };
     else delete entry.relinkAside;
     saveLedger(vault, ledger);
   });
@@ -380,9 +417,11 @@ function rewriteNote(vault, rel, fromRel, toRel, entry = null, ledger = null) {
 }
 
 /**
- * A link rewrite that stopped mid-swap (see vault.mjs replaceNoteIfUnchanged): the original set aside goes back when
- * the note is missing or the note is still our temp file and the original was edited; an unchanged original next to
- * a note is dropped. Anything else (an editor's new note AND an edited original) is left for a person.
+ * A link rewrite that stopped mid-swap (see vault.mjs replaceNoteIfUnchanged), settled by CONTENT, never by inode, and
+ * without overwriting anything: the temp name is dropped; an unchanged original set aside goes back to an empty path
+ * and is otherwise dropped (the note there is ours or newer); an edited one
+ * goes back to the path when the path is empty or still holds exactly our rewritten text (taken back first), and is
+ * otherwise kept as a visible conflict note next to the note, which stays as the user left it.
  */
 function settleRelinkAside(vault, entry) {
   const j = entry.relinkAside;
@@ -392,16 +431,14 @@ function settleRelinkAside(vault, entry) {
     || !/^\.attic-relink-[0-9a-f]+\.orig$/.test(path.basename(aside)) || !/^\.attic-relink-[0-9a-f]+\.tmp$/.test(path.basename(tmp))) {
     throw new Error('원장의 링크 고침 기록이 올바르지 않음 — 직접 확인 필요');
   }
-  const a = statL(aside);
-  if (a) {
-    const n = statL(abs), t = statL(tmp);
-    const ours = n && t && n.ino === t.ino && n.dev === t.dev;
-    const unchanged = sha(aside) === j.sha256;
-    if (!n || (ours && !unchanged)) fs.renameSync(aside, abs);
-    else if (unchanged) fs.unlinkSync(aside);
-    else throw new Error(`링크를 고치다 멈춘 노트의 바뀐 원본이 ${j.aside} 에 남아 있음 — 직접 확인 필요`);
+  try { fs.unlinkSync(tmp); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (statL(aside)) {
+    if (sha(aside) === j.sha256) { if (!placeNoClobber(aside, abs)) fs.unlinkSync(aside); } // a note at the path supersedes it
+    else {
+      const isOurs = (b) => typeof j.newSha256 === 'string' && crypto.createHash('sha256').update(b).digest('hex') === j.newSha256;
+      if (!(takeBackIfOurs(abs, isOurs) && placeNoClobber(aside, abs))) keepAsConflict(aside, abs);
+    }
   }
-  try { fs.unlinkSync(tmp); } catch { /* gone */ }
   delete entry.relinkAside;
 }
 function badRel(vault, rel) {
