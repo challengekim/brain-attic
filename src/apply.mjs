@@ -43,13 +43,15 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
   const archiveRow = (p) => {
     if (!archivePlan) {
       recoverAside(vault, now);
-      finishRelinks(vault, now);
       const ps = listProposals(vault, { status: 'approved' }).filter((q) => q.payload?.op === 'archive_note' && isApplicable(q));
       const files = ps.map((q) => q.payload.file).filter((f) => typeof f === 'string');
       archivePlan = new Map(planArchive(vault, ps, { index: linkIndex(vault, files) }).map((r) => [r.id, r]));
     }
     return archivePlan.get(p.id);
   };
+  // Link rewrites left unfinished by an earlier move (crash, or a note that changed while we wrote it): every tick, not
+  // only when an archive card is waiting.
+  finishRelinks(vault, now);
   for (const p of listProposals(vault, { status: 'approved' })) {
     if (onlyAuto && !p.autoApplied) continue;
     // Only proposals approved within createdAt + TTL may act (an old/expired approval must not).

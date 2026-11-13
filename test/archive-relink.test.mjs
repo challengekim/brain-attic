@@ -157,3 +157,31 @@ test('[relink] the hourly apply moves and relinks the same way', async () => {
   assert.ok(r.applied.some((x) => x.id === linked.id), JSON.stringify(r));
   assert.equal(read(vault, '2026-11-01.md'), '[[90_Archive/10_Knowledge/References/A/linked]]\n');
 });
+
+test('[relink/self-review] a linking note we would refuse to rewrite (second hard link, not UTF-8) keeps blocking the move', () => {
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/h.md');
+  note(vault, '10_Knowledge/References/A/u.md');
+  note(vault, 'hub.md', '[[10_Knowledge/References/A/h]]\n');
+  fs.linkSync(path.join(vault, 'hub.md'), path.join(vault, 'hub-copy.txt')); // nlink 2
+  fs.writeFileSync(path.join(vault, 'latin.md'), Buffer.concat([Buffer.from('[[10_Knowledge/References/A/u]] '), Buffer.from([0xff, 0xfe]), Buffer.from('\n')]));
+  const plan = planArchive(vault, ['h', 'u'].map((n) => approvedDrop(vault, `10_Knowledge/References/A/${n}.md`)));
+  assert.deepEqual(plan.map((r) => r.status), ['blocked', 'blocked']);
+});
+
+test('[relink/self-review] the hourly apply finishes a pending relink even when no archive card is waiting', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const once = read(vault, '_system/entities/넥덕.md');
+  fs.writeFileSync(path.join(vault, '_system/entities/넥덕.md'), ENTITY);
+  const led = readArchiveLedger(vault);
+  const e = led.find((x) => x.proposalId === p.id);
+  delete e.relinkedAt; delete e.relinked;
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify(led));
+  await apply(ctx, { now: LATER });
+  assert.equal(read(vault, '_system/entities/넥덕.md'), once);
+});

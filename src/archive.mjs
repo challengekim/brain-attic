@@ -135,6 +135,14 @@ function decodeLoose(s) {
   return s.replace(/(?:%[0-9a-f]{2})+/gi, (run) => { try { return decodeURIComponent(run); } catch { return run.replace(/%[0-9a-f]{2}/gi, one); } }).toLowerCase();
 }
 
+/** Whether rewriteNote would accept this note (same checks, without writing). */
+function rewritable(vault, rel, raw, text) {
+  try {
+    const st = fs.lstatSync(path.join(vault, rel));
+    return st.isFile() && st.nlink === 1 && !symlinkOnTarget(vault, rel) && Buffer.from(text, 'utf8').equals(raw);
+  } catch { return false; }
+}
+
 /**
  * One pass over every note: which of `files` other notes link to, and how.
  *   name   [[basename]] links (survive a move when the name is unique)
@@ -168,13 +176,14 @@ export function linkIndex(vault, files) {
   }));
   // Every note is a link source, the candidates too (one candidate may link another); only a note's links to itself are ignored.
   for (const rel of all) {
-    let text;
-    try { text = fs.readFileSync(path.join(vault, rel), 'utf8'); } catch { continue; }
+    let raw, text;
+    try { raw = fs.readFileSync(path.join(vault, rel)); text = raw.toString('utf8'); } catch { continue; }
     if (!text.includes('[[') && !text.includes('](') && !text.includes(']:') && !files.some((f) => text.includes(f))) continue;
     const inAttic = rel.startsWith('_attic/');
     // A note we may rewrite: not brain-attic's own records, not an archived note (its hash is in the ledger), not a note
     // that moves itself (its hash is checked on the way).
-    const editable = !inAttic && !rel.startsWith(`${ARCHIVE_ROOT}/`) && !moving.has(rel);
+    // It must also pass rewriteNote's own checks (one hard link, valid UTF-8), or its links would break unfixed.
+    const editable = !inAttic && !rel.startsWith(`${ARCHIVE_ROOT}/`) && !moving.has(rel) && rewritable(vault, rel, raw, text);
     const hit = (f, kind) => { if (f === rel) return; const w = want.get(f); if (inAttic) w.attic++; else { w[kind]++; if (w.from.length < 5 && !w.from.includes(rel)) w.from.push(rel); } };
     for (const m of text.matchAll(WIKI)) {
       const target = wikiTarget(m[1]);
