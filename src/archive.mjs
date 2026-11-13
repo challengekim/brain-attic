@@ -78,6 +78,7 @@ function wikiTarget(inner) {
   return inner.split(/[|#^]/)[0].replace(/\\$/, '').trim().replace(/\.md$/i, '').replace(/^\/+/, '');
 }
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
+const CONTAINER = /^(?: {0,3}(?:> ?|(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$) ?))*/; // leading quote markers and list markers
 // Lines that can interrupt a paragraph (CommonMark), so a code span cannot run on into them: an ATX heading, a bullet
 // with content, an ordered item numbered 1 with content. Not «2.», an empty item or a quote line (they may continue).
 const BLOCK_START = /^ {0,3}#{1,6}(\s|$)|^ {0,3}[-*+][ \t]+\S|^ {0,3}1[.)][ \t]+\S/;
@@ -133,7 +134,8 @@ const touches = (line) => /<!--|-->|<\/?(pre|code|script|style|textarea)\b|%%|\$
  *   - [[wikilinks]] whose target is exactly that path (with or without .md or a leading /): only the target changes,
  *     the alias, heading, block, embed ! and a table's \| stay;
  *   - an inline code span that is exactly that .md path (`` `10_Knowledge/…/x.md` ``, the wiki index's form).
- * Untouched: fenced code blocks (closed only by the same char, at least as long), any line indented 4 spaces or a tab,
+ * Untouched: fenced code blocks (closed only by the same char, at least as long; also inside a quote or list item), any
+ * line indented 4 spaces or a tab (after quote/list markers),
  * HTML code/comment regions, %% comments, $$ math (see regionAfter), other code spans (and wikilinks
  * inside them), anything a backtick run left open earlier in the same block may still be spanning (a `path` there stays
  * a stale mention; an exact link there blocks the move, see linkIndex), code spans inside a wikilink, bare text, URLs, other notes' links and aliases. Partial or
@@ -149,16 +151,18 @@ export function rewriteRefs(text, fromRel, toRel) {
   // HTML code/comment blocks, Obsidian %% comments, $$ math. `region` = the marker that closes the open one.
   let region = null;
   const lines = text.split('\n').map((line) => {
-    const f = FENCE_OPEN.exec(line);
+    // Container markers (quote >, list items) come off first: a fence or indented code inside them is code too.
+    const body = line.replace(CONTAINER, '');
+    const f = FENCE_OPEN.exec(body);
     if (fence) {
-      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) fence = null;
+      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(body)) fence = null;
       return line;
     }
     if (region || touches(line)) { region = regionAfter(line, region); spanOpen = false; return line; } // left as a whole
     if (!line.trim()) { spanOpen = false; return line; }
     // 4+ spaces or a tab: indented code, or a continuation we cannot tell from it — never touched.
-    if (/^( {4}| {0,3}\t)/.test(line)) return line;
-    if (f && !(f[1][0] === '`' && line.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; }
+    if (/^( {4}| {0,3}\t)/.test(body)) return line;
+    if (f && !(f[1][0] === '`' && body.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; }
     if (BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
     const wikis = [...line.matchAll(WIKI)].map((m) => ({ s: m.index, e: m.index + m[0].length, m }));
     const { spans, openAt } = codeSpans(line, wikis);

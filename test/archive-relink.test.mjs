@@ -571,3 +571,12 @@ test('[relink/r6-self] region edges: $$ mid-line, a %% pair inside an open comme
   assert.equal(rewriteRefs('%%\nc\n%% [[x/y]]\n', 'x/y.md', to).count, 0); // the closing line itself is left alone
   assert.equal(rewriteRefs('%%\nc\n%%\n[[x/y]]\n', 'x/y.md', to).count, 1);
 });
+
+test('[relink/r6-self] fences and indented code inside a quote or a list item are code too', () => {
+  const to = '90_Archive/x/y.md';
+  for (const t of ['> ```\n> [[x/y]]\n> ```\n', '- ```\n  [[x/y]]\n  ```\n', '> - ~~~\n>   `x/y.md`\n>   ~~~\n', '>     [[x/y]]\n', '1.     [[x/y]]\n']) {
+    assert.equal(rewriteRefs(t, 'x/y.md', to).count, 0, JSON.stringify(t));
+  }
+  assert.equal(rewriteRefs('> ```\n> a\n> ```\n> [[x/y]]\n', 'x/y.md', to).count, 1);
+  assert.equal(rewriteRefs('> [[x/y]]\n- [[x/y]]\n  `x/y.md`\n', 'x/y.md', to).count, 3);
+});
