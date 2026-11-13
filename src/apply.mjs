@@ -10,7 +10,7 @@ import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
 import { applyTry } from './todo.mjs';
 import { addRule } from './feedback.mjs';
-import { closeAlready, linkIndex, moveOne, planArchive, recoverAside } from './archive.mjs';
+import { closeAlready, finishRelinks, linkIndex, moveOne, planArchive, recoverAside, relinkErrorsFor } from './archive.mjs';
 
 export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule', 'archive_note'];
 
@@ -49,6 +49,9 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
     }
     return archivePlan.get(p.id);
   };
+  // Link rewrites left unfinished by an earlier move (crash, or a note that changed while we wrote it): every tick, not
+  // only when an archive card is waiting.
+  finishRelinks(vault, now);
   for (const p of listProposals(vault, { status: 'approved' })) {
     if (onlyAuto && !p.autoApplied) continue;
     // Only proposals approved within createdAt + TTL may act (an old/expired approval must not).
@@ -125,6 +128,12 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
         result.applied.push({ id: p.id, op });
       } catch (e) { result.errors.push({ id: p.id, error: e.message }); }
     }
+  }
+  // The links of this tick's moves, in one swap per referencing note.
+  const moved = result.applied.filter((x) => x.op === 'archive_note' && x.to).map((x) => x.id);
+  if (moved.length) {
+    try { finishRelinks(vault, now); result.errors.push(...relinkErrorsFor(vault, moved)); }
+    catch (e) { result.errors.push({ id: moved[0], error: `옮겼지만 링크 고침을 마치지 못함(다음 실행 때 다시): ${e.message}` }); }
   }
   return result;
 }

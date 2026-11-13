@@ -1,5 +1,6 @@
 // Vault helpers. brain-attic only WRITES under <vault>/_attic/. User notes are read-only -- the one exception is
-// src/archive.mjs, which MOVES an approved d note to 90_Archive/ (never edits or deletes one).
+// src/archive.mjs, which MOVES an approved d note to 90_Archive/ and rewrites the references to that note's full path
+// in other notes (replaceNoteIfUnchanged below). It never deletes a note.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -65,6 +66,92 @@ export function copyIntoAttic(vault, rel, srcFile) {
   if (fs.existsSync(target)) return false;
   writeFileAtomic(target, fs.readFileSync(srcFile));
   return true;
+}
+
+const sameBytes = (p, buf) => { try { return fs.readFileSync(p).equals(buf); } catch { return false; } };
+const dropName = (p) => { try { fs.unlinkSync(p); } catch { /* gone */ } };
+const relinkTag = () => crypto.randomBytes(6).toString('hex');
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+
+/** Put the file named `src` at `abs` without overwriting anything there (hard link, then drop the src name). false = taken. */
+export function placeNoClobber(src, abs) {
+  try { fs.linkSync(src, abs); } catch (e) { if (e.code === 'EEXIST') return false; throw e; }
+  fs.unlinkSync(src);
+  return true;
+}
+
+/**
+ * Free `abs` only if it still holds exactly `isOurs(bytes)`: renamed away first (atomic), checked by CONTENT, and put
+ * back without overwriting if it is not ours. Ours is never unlinked here: `retire(file, sha256)` takes it (see
+ * replaceNoteIfUnchanged), since a writer that opened it earlier may still write to it. true = the path is free now;
+ * false = someone else's file is there.
+ */
+export function takeBackIfOurs(abs, isOurs, retire) {
+  const q = path.join(path.dirname(abs), `.attic-relink-${relinkTag()}.take`);
+  try { fs.renameSync(abs, q); } catch (e) { if (e.code === 'ENOENT') return true; throw e; }
+  const b = fs.readFileSync(q);
+  if (isOurs(b)) { retire(q, sha256(b)); return true; }
+  if (placeNoClobber(q, abs)) return false;
+  throw new Error(`노트를 제자리에 돌려놓지 못함 — ${path.basename(q)} 에 남아 있음, 직접 확인 필요`);
+}
+
+/** Keep a file as a visible note next to `abs` («<이름> (보관 링크 충돌 <tag>).md»), never overwriting. Returns its name. */
+export function keepAsConflict(src, abs) {
+  const base = path.basename(abs).replace(/\.md$/i, '');
+  for (;;) {
+    const c = path.join(path.dirname(abs), `${base} (보관 링크 충돌 ${relinkTag()}).md`);
+    if (placeNoClobber(src, c)) return path.basename(c);
+  }
+}
+
+/**
+ * The one write brain-attic makes to a note outside _attic/ (archive relink, src/archive.mjs, which checks the path):
+ * put `text` at `abs` if it still holds exactly `raw`. Nothing is ever renamed onto an existing file, and nothing that
+ * was ever at the path is unlinked: such a file goes to `retire(file, sha256 we checked)` (archive.mjs keeps it under
+ * _attic and drops it later only if its content is still that), so an editor's save made meanwhile — even a late write
+ * through a file it opened earlier — is never lost:
+ *   1. write a fresh temp file (wx);  2. journal, then rename the original aside (atomic);
+ *   3. link ours to the path without overwriting — an editor's new file there wins;
+ *   4. the original set aside was edited in place meanwhile -> take ours back only if its content is still ours and
+ *      put the edited original at the path (no overwrite); if both sides changed, the edited original is kept as a
+ *      visible conflict note next to it.
+ * Throws whenever ours did not end up at the path (the caller retries later). `journal({ tmp, aside })` before step 2,
+ * `journal(null)` only once the files are consistent again; a crash in between is settled by settleRelinkAside
+ * (archive.mjs). hooks: tests only.
+ */
+export function replaceNoteIfUnchanged(abs, raw, text, { mode = 0o644, journal = null, retire, hooks = {} } = {}) {
+  if (typeof retire !== 'function') throw new Error('replaceNoteIfUnchanged: retire 가 필요함');
+  const tag = relinkTag();
+  const tmp = path.join(path.dirname(abs), `.attic-relink-${tag}.tmp`);
+  const aside = path.join(path.dirname(abs), `.attic-relink-${tag}.orig`);
+  const ours = Buffer.from(text, 'utf8');
+  const rawSha = sha256(raw);
+  fs.writeFileSync(tmp, ours, { flag: 'wx', mode });
+  journal?.({ tmp, aside });
+  try { fs.renameSync(abs, aside); } catch (e) { dropName(tmp); journal?.(null); throw e; } // tmp: never visible
+  hooks.afterAside?.(aside);
+  // The path holds someone's newer file: the original set aside is retired if unchanged, else kept as a conflict note.
+  const yieldTo = (why) => {
+    dropName(tmp); // never linked to the path
+    if (sameBytes(aside, raw)) { retire(aside, rawSha); journal?.(null); throw new Error(`${why} — 새 노트는 그대로 두고 다음 실행 때 다시 고침`); }
+    const c = keepAsConflict(aside, abs);
+    journal?.(null);
+    throw new Error(`${why} — 새 노트는 그대로 두고, 그 전에 바뀐 내용은 «${c}» 로 남김`);
+  };
+  let placed;
+  try { placed = placeNoClobber(tmp, abs); } catch (e) {
+    // Ours could not be linked: put the original back (no overwrite). If that fails too the journal stays.
+    if (placeNoClobber(aside, abs)) { dropName(tmp); journal?.(null); }
+    throw e;
+  }
+  if (!placed) yieldTo('고치는 사이에 노트가 새로 저장됨');
+  hooks.afterLink?.(aside);
+  if (sameBytes(aside, raw)) { retire(aside, rawSha); journal?.(null); return; }
+  // The original was edited in place before we set it aside: that edit wins over our rewrite.
+  if (!takeBackIfOurs(abs, (b) => b.equals(ours), retire)) yieldTo('고치는 사이에 노트가 바뀌고 새로 저장됨');
+  if (!placeNoClobber(aside, abs)) yieldTo('고치는 사이에 노트가 바뀌고 새로 저장됨');
+  journal?.(null);
+  throw new Error('고치는 사이에 노트가 바뀜 — 바뀐 내용을 그대로 두고 다음 실행 때 다시 고침');
 }
 
 /** Per-vault random id (created once). Proposal ids derive from it so they cannot collide with another vault's. */
