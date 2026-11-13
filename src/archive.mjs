@@ -117,21 +117,20 @@ export function rewriteRefs(text, fromRel, toRel) {
   let count = 0;
   let fence = null; // the open fence: { ch, len }
   let spanOpen = false; // an unclosed backtick run earlier in this paragraph: code spans here are not trusted
-  let prevBlank = true, indented = false; // an indented code block: 4 spaces or a tab after a blank line (or another)
+  // The kind of the previous line: an indented code block (4 spaces or a tab) cannot interrupt a paragraph, but starts
+  // after anything else — a blank line, a heading, a rule, a closed fence, another code line.
+  let prev = 'blank';
   const lines = text.split('\n').map((line) => {
-    const blank = !line.trim();
-    const ind = !blank && /^( {4}|\t| {0,3}\t)/.test(line);
-    indented = fence ? false : blank ? indented : ind && (prevBlank || indented);
-    prevBlank = blank;
-    if (indented && !blank) return line;
     const f = FENCE_OPEN.exec(line);
     if (fence) {
-      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) fence = null;
+      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) { fence = null; prev = 'block'; }
       return line;
     }
+    if (!line.trim()) { spanOpen = false; prev = 'blank'; return line; }
+    if (/^( {4}| {0,3}\t)/.test(line) && prev !== 'para') { spanOpen = false; prev = 'block'; return line; } // indented code
     if (f && !(f[1][0] === '`' && line.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; }
-    if (!line.trim() || BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
-    if (!line.trim()) return line;
+    if (BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
+    prev = /^ {0,3}(#{1,6}(\s|$)|([-*_])( *\3){2,} *$|=+ *$)/.test(line) ? 'block' : 'para'; // heading, rule, setext line
     const wikis = [...line.matchAll(WIKI)].map((m) => ({ s: m.index, e: m.index + m[0].length, m }));
     const { spans, openAt } = codeSpans(line, wikis);
     // A span crossing lines may hide a link or `path` inside it: only what ends before an open run is trusted.

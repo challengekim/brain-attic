@@ -539,3 +539,13 @@ test('[relink/r4-self] an indented code block (4 spaces or a tab after a blank l
   note(vault, 'hub.md', '\n    [[x/y]]\n');
   assert.equal(planArchive(vault, [approvedDrop(vault, 'x/y.md')])[0].status, 'blocked');
 });
+
+// ---------------------------------------------------------------- Codex round 5 (P1)
+test('[relink/r5] an indented code block may start right after any non-paragraph line (heading, rule, closed fence)', () => {
+  const to = '90_Archive/x/y.md';
+  for (const head of ['# Example', '---', '***', '```\ncode\n```', 'Title\n===']) {
+    assert.equal(rewriteRefs(`${head}\n    [[x/y]]\n`, 'x/y.md', to).count, 0, head);
+  }
+  assert.equal(rewriteRefs('- item\n    [[x/y]]\n', 'x/y.md', to).count, 1); // continues the item's paragraph
+  assert.equal(rewriteRefs('# Example\n[[x/y]]\n', 'x/y.md', to).count, 1);
+});
