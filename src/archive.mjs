@@ -27,7 +27,8 @@ const SKIP_DIRS = new Set(['.git', '.obsidian', '.trash', 'node_modules']);
 const ledgerRel = 'archive/ledger.json';
 
 export const archiveTarget = (file) => `${ARCHIVE_ROOT}/${file}`;
-const sha = (abs) => crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+const shaBuf = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+const sha = (abs) => shaBuf(fs.readFileSync(abs));
 const noExt = (rel) => rel.replace(/\.md$/i, '');
 const posix = (p) => p.split(path.sep).join('/');
 
@@ -80,21 +81,21 @@ const BLOCK_START = /^ {0,3}([-*+]|\d{1,9}[.)])(\s|$)|^ {0,3}#{1,6}(\s|$)/; // l
 
 /**
  * Inline code spans of one line (CommonMark: a backtick run closes at the next run of the same length).
- * `open` = a run is left unclosed, so a span may go on across the next lines.
+ * `openAt` = where the first unclosed run is (-1: none): a span may start there and go on across the next lines.
  * Backticks inside a [[wikilink]] are the link's text and are skipped.
  */
 function codeSpans(line, wikis = []) {
   // a backtick inside a [[wikilink]] is part of the link's text, not a code delimiter
   const runs = [...line.matchAll(/`+/g)].filter((m) => !wikis.some((w) => m.index > w.s && m.index < w.e)).map((m) => ({ s: m.index, n: m[0].length }));
   const out = [];
-  let open = false;
+  let openAt = -1;
   for (let k = 0; k < runs.length; k++) {
     const c = runs.findIndex((r, j) => j > k && r.n === runs[k].n);
-    if (c < 0) { open = true; continue; }
+    if (c < 0) { if (openAt < 0) openAt = runs[k].s; continue; }
     out.push({ s: runs[k].s, e: runs[c].s + runs[c].n, n: runs[k].n, inner: line.slice(runs[k].s + runs[k].n, runs[c].s) });
     k = c;
   }
-  return { spans: out, open };
+  return { spans: out, openAt };
 }
 
 /**
@@ -103,8 +104,8 @@ function codeSpans(line, wikis = []) {
  *     the alias, heading, block, embed ! and a table's \| stay;
  *   - an inline code span that is exactly that .md path (`` `10_Knowledge/…/x.md` ``, the wiki index's form).
  * Untouched: fenced code blocks (closed only by the same char, at least as long), other code spans (and wikilinks
- * inside them), any `path` on a line where a backtick run left open earlier in the same block may still be
- * spanning (stays a stale mention), code spans inside a wikilink, bare text, URLs, other notes' links and aliases. Partial or
+ * inside them), anything a backtick run left open earlier in the same block may still be spanning (a `path` there stays
+ * a stale mention; an exact link there blocks the move, see linkIndex), code spans inside a wikilink, bare text, URLs, other notes' links and aliases. Partial or
  * case-differing paths and markdown links block the move instead. Reversible: rewriteRefs(rewriteRefs(t, a, b).text,
  * b, a) gives t back unless t already spelled b. Returns { text, count }.
  */
@@ -123,9 +124,11 @@ export function rewriteRefs(text, fromRel, toRel) {
     if (!line.trim() || BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
     if (!line.trim()) return line;
     const wikis = [...line.matchAll(WIKI)].map((m) => ({ s: m.index, e: m.index + m[0].length, m }));
-    const { spans, open } = codeSpans(line, wikis);
-    const codeOk = !spanOpen && !open; // a span crossing lines may hide `path` inside a longer span: leave those alone
-    spanOpen = spanOpen || open;
+    const { spans, openAt } = codeSpans(line, wikis);
+    // A span crossing lines may hide a link or `path` inside it: only what ends before an open run is trusted.
+    const before = spanOpen ? -1 : openAt < 0 ? Infinity : openAt;
+    const trusted = (x) => x.e <= before;
+    spanOpen = spanOpen || openAt >= 0;
     if (!line.includes(a)) return line;
     const inside = (x, ys) => ys.some((y) => x.s >= y.s && x.e <= y.e);
     const overlaps = (x, ys) => ys.some((y) => x.s < y.e && y.s < x.e);
@@ -140,12 +143,12 @@ export function rewriteRefs(text, fromRel, toRel) {
       const orig = line.slice(it.s, it.e);
       if (it.kind === 'wiki') {
         const inner = it.m[1];
-        if (wikiTarget(inner) === a) {
+        if (trusted(it) && wikiTarget(inner) === a) {
           const i = inner.indexOf(a); // only blanks and slashes can come before it
           count++;
           out += orig.slice(0, orig.indexOf('[[') + 2) + inner.slice(0, i) + b + inner.slice(i + a.length) + ']]';
         } else out += orig;
-      } else if (codeOk && it.n === 1 && it.inner === fromRel) { count++; out += '`' + toRel + '`'; } else out += orig;
+      } else if (trusted(it) && it.n === 1 && it.inner === fromRel) { count++; out += '`' + toRel + '`'; } else out += orig;
       last = it.e;
     }
     return out + line.slice(last);
@@ -229,12 +232,17 @@ export function linkIndex(vault, files) {
     // It must also pass rewriteNote's own checks (one hard link, valid UTF-8), or its links would break unfixed.
     const editable = !inAttic && !rel.startsWith(`${ARCHIVE_ROOT}/`) && !moving.has(rel) && rewritable(vault, rel, raw, text);
     const hit = (f, kind) => { if (f === rel) return; const w = want.get(f); if (inAttic) w.attic++; else { w[kind]++; if (w.from.length < 5 && !w.from.includes(rel)) w.from.push(rel); } };
+    const exactHere = new Set();
     for (const m of text.matchAll(WIKI)) {
       const target = wikiTarget(m[1]);
       if (!target) continue;
       if (target.includes('/')) {
         const t = target.toLowerCase();
-        for (const [p, f] of byPath) if (p === t || p.endsWith('/' + t)) hit(f, editable && target === noExt(f) ? 'exact' : 'path');
+        for (const [p, f] of byPath) if (p === t || p.endsWith('/' + t)) {
+          const exact = editable && target === noExt(f);
+          hit(f, exact ? 'exact' : 'path');
+          if (exact && f !== rel) exactHere.add(f);
+        }
       } else for (const f of byName.get(target.toLowerCase()) || []) hit(f, 'name');
     }
     if (text.includes('](') || text.includes(']:')) {
@@ -247,7 +255,17 @@ export function linkIndex(vault, files) {
       }
     }
     if (!inAttic) for (const f of files) if (f !== rel && text.includes(f)) want.get(f).pathMentions++;
-    if (editable) for (const f of files) if (text.includes(noExt(f)) && rewriteRefs(text, f, archiveTarget(f)).count) want.get(f).relink.add(rel);
+    if (editable) for (const f of files) {
+      if (!text.includes(noExt(f))) continue;
+      const r = rewriteRefs(text, f, archiveTarget(f));
+      if (r.count) want.get(f).relink.add(rel);
+      // An exact link the rewrite leaves alone (it may sit inside code) would break: it blocks like any path link.
+      if (exactHere.has(f)) {
+        let left = 0;
+        for (const m of r.text.matchAll(WIKI)) if (wikiTarget(m[1]) === noExt(f)) left++;
+        if (left) { want.get(f).exact -= left; want.get(f).path += left; }
+      }
+    }
   }
   return want;
 }
@@ -386,11 +404,12 @@ export function recoverAside(vault, now = new Date()) {
 }
 
 /**
- * Rewrite one note's references from `fromRel` to `toRel` in place: a regular UTF-8 file with no symlink on the way and
- * no second hard link; written to a fresh temp file next to it and renamed over it, only if the note still reads the
- * same as when we read it. Returns the number of references changed (0 = nothing to do, nothing written).
+ * Rewrite one note's references for every [fromRel, toRel] pair in one swap: a regular UTF-8 file with no symlink on
+ * the way and no second hard link, replaced only if it still reads the same as when we read it (vault.mjs
+ * replaceNoteIfUnchanged). The swap is journaled on `holder` (a ledger entry). Returns the count per pair (all 0 =
+ * nothing to do, nothing written).
  */
-function rewriteNote(vault, rel, fromRel, toRel, entry = null, ledger = null) {
+function rewriteNote(vault, rel, pairs, holder, ledger, now) {
   const parts = String(rel).split('/');
   if (!rel || path.isAbsolute(rel) || parts.some((p) => !p || p === '.' || p === '..') || !/\.md$/i.test(rel)) throw new Error('볼트 안 노트 경로가 아님');
   if (['_attic', ARCHIVE_ROOT].includes(parts[0])) throw new Error(`${parts[0]} 아래 노트는 고치지 않음`);
@@ -403,97 +422,152 @@ function rewriteNote(vault, rel, fromRel, toRel, entry = null, ledger = null) {
   const raw = fs.readFileSync(abs);
   const text = raw.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(raw)) throw new Error('UTF-8 이 아닌 노트 — 고치지 않음');
-  const r = rewriteRefs(text, fromRel, toRel);
-  if (!r.count) return 0;
-  const hash = crypto.createHash('sha256').update(raw).digest('hex');
-  const newHash = crypto.createHash('sha256').update(r.text, 'utf8').digest('hex');
-  const journal = entry && ((j) => {
-    if (j) entry.relinkAside = { file: rel, tmp: posix(path.relative(vault, j.tmp)), aside: posix(path.relative(vault, j.aside)), sha256: hash, newSha256: newHash };
-    else delete entry.relinkAside;
+  let t = text;
+  const counts = pairs.map(([from, to]) => { const r = rewriteRefs(t, from, to); t = r.text; return r.count; });
+  if (!counts.some(Boolean)) return counts;
+  const hash = shaBuf(raw), newHash = shaBuf(Buffer.from(t, 'utf8'));
+  const journal = (j) => {
+    if (j) holder.relinkAside = { file: rel, tmp: posix(path.relative(vault, j.tmp)), aside: posix(path.relative(vault, j.aside)), sha256: hash, newSha256: newHash };
+    else delete holder.relinkAside;
     saveLedger(vault, ledger);
-  });
-  replaceNoteIfUnchanged(abs, raw, r.text, st.mode & 0o777, journal);
-  return r.count;
+  };
+  replaceNoteIfUnchanged(abs, raw, t, { mode: st.mode & 0o777, journal, retire: keeper(vault, holder, ledger, now, rel) });
+  return counts;
+}
+
+/**
+ * Files that were once at a note's path are never unlinked right away (a writer that opened one earlier may still
+ * write to it): they move to _attic/archive/relink-kept/ with the content we checked, recorded on `holder` first.
+ * pruneKept drops them after KEEP_MS only if another name still holds the file or the content is still that;
+ * otherwise the file becomes a visible conflict note next to the note.
+ */
+const KEPT_DIR = 'archive/relink-kept';
+const KEEP_MS = 10 * 60 * 1000;
+function keeper(vault, holder, ledger, now, rel) {
+  return (file, sha256) => {
+    const krel = `${KEPT_DIR}/${crypto.randomBytes(8).toString('hex')}.kept`; // not .md: Obsidian and the link scan skip it
+    const dest = atticWritePath(vault, krel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    holder.relinkKept = [...(holder.relinkKept || []), { kept: `_attic/${krel}`, file: rel, sha256: sha256 || null, at: now.toISOString() }];
+    saveLedger(vault, ledger); // recorded first: a crash before the rename leaves a record whose file is missing (dropped)
+    fs.renameSync(file, dest);
+  };
+}
+function pruneKept(vault, ledger, now) {
+  const notes = [];
+  for (const e of ledger) {
+    if (!e.relinkKept?.length) continue;
+    const keep = [];
+    for (const k of e.relinkKept) {
+      if (now - new Date(k.at) < KEEP_MS) { keep.push(k); continue; }
+      try {
+        if (typeof k.kept !== 'string' || !new RegExp(`^_attic/${KEPT_DIR}/[0-9a-f]{16}\\.kept$`).test(k.kept)) throw new Error('원장의 보관 사본 경로가 올바르지 않음');
+        const abs = atticWritePath(vault, k.kept.slice('_attic/'.length));
+        const st = statL(abs);
+        if (!st) continue; // never got there, or already handled
+        if (st.nlink > 1 || (k.sha256 && sha(abs) === k.sha256)) { fs.unlinkSync(abs); continue; } // provably not the last copy of anything new
+        if (badRel(vault, k.file)) throw new Error('원장의 노트 경로가 올바르지 않음');
+        notes.push(keepAsConflict(abs, path.join(vault, k.file)));
+      } catch (err) { k.error = err.message; keep.push(k); }
+    }
+    if (keep.length) e.relinkKept = keep; else delete e.relinkKept;
+  }
+  saveLedger(vault, ledger);
+  return notes;
 }
 
 /**
  * A link rewrite that stopped mid-swap (see vault.mjs replaceNoteIfUnchanged), settled by CONTENT, never by inode, and
- * without overwriting anything: the temp name is dropped; an unchanged original set aside goes back to an empty path
- * and is otherwise dropped (the note there is ours or newer); an edited one
- * goes back to the path when the path is empty or still holds exactly our rewritten text (taken back first), and is
- * otherwise kept as a visible conflict note next to the note, which stays as the user left it.
+ * without overwriting or unlinking anything that was at the path:
+ *   - the temp name is retired (as ours if its content is still ours; otherwise kept until pruneKept sees it);
+ *   - an unchanged original goes back to an empty path, else it is retired (the note there is ours or newer);
+ *   - an edited original goes back when the path is empty or holds exactly our text (taken back first), and is
+ *     otherwise kept as a visible conflict note next to the note, which stays as the user left it.
  */
-function settleRelinkAside(vault, entry) {
-  const j = entry.relinkAside;
+function settleRelinkAside(vault, holder, ledger, now) {
+  const j = holder.relinkAside;
   const inVault = (rel) => (typeof rel === 'string' && !badRel(vault, rel) ? path.join(vault, rel) : null);
   const abs = inVault(j.file), aside = inVault(j.aside), tmp = inVault(j.tmp);
   if (!abs || !aside || !tmp || path.dirname(aside) !== path.dirname(abs) || path.dirname(tmp) !== path.dirname(abs)
     || !/^\.attic-relink-[0-9a-f]+\.orig$/.test(path.basename(aside)) || !/^\.attic-relink-[0-9a-f]+\.tmp$/.test(path.basename(tmp))) {
     throw new Error('원장의 링크 고침 기록이 올바르지 않음 — 직접 확인 필요');
   }
-  try { fs.unlinkSync(tmp); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const retire = keeper(vault, holder, ledger, now, j.file);
+  const isOurs = (b) => typeof j.newSha256 === 'string' && shaBuf(b) === j.newSha256;
+  if (statL(tmp)) retire(tmp, isOurs(fs.readFileSync(tmp)) ? j.newSha256 : null);
   if (statL(aside)) {
-    if (sha(aside) === j.sha256) { if (!placeNoClobber(aside, abs)) fs.unlinkSync(aside); } // a note at the path supersedes it
-    else {
-      const isOurs = (b) => typeof j.newSha256 === 'string' && crypto.createHash('sha256').update(b).digest('hex') === j.newSha256;
-      if (!(takeBackIfOurs(abs, isOurs) && placeNoClobber(aside, abs))) keepAsConflict(aside, abs);
-    }
+    if (sha(aside) === j.sha256) { if (!placeNoClobber(aside, abs)) retire(aside, j.sha256); }
+    else if (!(takeBackIfOurs(abs, isOurs, retire) && placeNoClobber(aside, abs))) keepAsConflict(aside, abs);
   }
-  delete entry.relinkAside;
+  delete holder.relinkAside;
+  saveLedger(vault, ledger);
 }
 function badRel(vault, rel) {
   const parts = rel.split('/');
   return !rel || path.isAbsolute(rel) || parts.some((p) => !p || p === '.' || p === '..') || ['_attic', ARCHIVE_ROOT].includes(parts[0]) || !!symlinkOnTarget(vault, rel);
 }
 
-/** Rewrite the references for one moved entry (old path -> archive path); records what was done. Returns error texts. */
-function relinkEntry(vault, entry, ledger, now) {
-  const done = new Map((entry.relinked || []).map((x) => [x.file, x]));
-  const errors = [];
-  for (const rel of entry.relink || []) {
-    if (done.has(rel)) continue;
-    try { done.set(rel, { file: rel, count: rewriteNote(vault, rel, entry.from, entry.to, entry, ledger) }); }
-    catch (e) {
-      if (e.code === 'ENOENT') done.set(rel, { file: rel, count: 0, missing: true }); // the note is gone: nothing to fix
-      else errors.push(`${rel}: ${e.message}`);
-    }
+/**
+ * Rewrite the references for these ledger entries, each referencing note once for all of them (one swap per note, not
+ * one per moved note). back=false: old path -> archive path for moved entries, recorded per note in `relinked` and
+ * closed with relinkedAt; back=true: the reverse for undone entries, closed with unrelinkedAt. Failures are recorded
+ * (relinkError / unrelinkError) and retried by the next run.
+ */
+function relinkBatch(vault, ledger, entries, now, back = false) {
+  const busy = new Set(ledger.filter((e) => e.relinkAside).map((e) => e.relinkAside.file)); // an unsettled swap: wait
+  const byNote = new Map();
+  for (const e of entries) {
+    const done = new Set(back ? [] : (e.relinked || []).map((x) => x.file));
+    for (const rel of e.relink || []) if (!done.has(rel)) { if (!byNote.has(rel)) byNote.set(rel, []); byNote.get(rel).push(e); }
   }
-  entry.relinked = (entry.relink || []).filter((r) => done.has(r)).map((r) => done.get(r));
-  if (errors.length) entry.relinkError = errors.join(' / ');
-  else { delete entry.relinkError; entry.relinkedAt = now.toISOString(); }
+  const errs = new Map();
+  const fail = (e, msg) => errs.set(e, [...(errs.get(e) || []), msg]);
+  for (const [rel, es] of byNote) {
+    if (busy.has(rel)) { for (const e of es) fail(e, `${rel}: 이전 링크 고침이 아직 정리되지 않음`); continue; }
+    let counts;
+    try { counts = rewriteNote(vault, rel, es.map((e) => (back ? [e.to, e.from] : [e.from, e.to])), es[0], ledger, now); }
+    catch (err) {
+      if (err.code === 'ENOENT') counts = null; // the note is gone: nothing to fix
+      else { for (const e of es) fail(e, `${rel}: ${err.message}`); continue; }
+    }
+    if (!back) es.forEach((e, i) => { e.relinked = [...(e.relinked || []), counts ? { file: rel, count: counts[i] } : { file: rel, count: 0, missing: true }]; });
+    saveLedger(vault, ledger);
+  }
+  const [errKey, atKey] = back ? ['unrelinkError', 'unrelinkedAt'] : ['relinkError', 'relinkedAt'];
+  for (const e of entries) {
+    if (errs.has(e)) e[errKey] = errs.get(e).join(' / ');
+    else { delete e[errKey]; e[atKey] = now.toISOString(); }
+  }
   saveLedger(vault, ledger);
-  return errors;
 }
 
-/** Before (and after) a run: finish the link rewrites of moves that stopped before them. Returns the entries touched. */
+/**
+ * Every run and tick, before and after moving: settle swaps that stopped midway, rewrite the links of moved notes not
+ * yet relinked and turn back those of undone ones (batched), and prune the kept copies. Returns the entries touched.
+ */
 export function finishRelinks(vault, now = new Date()) {
   const ledger = readArchiveLedger(vault);
-  const out = [];
+  const out = new Set();
   for (const e of ledger) {
-    if (e.relinkAside) {
-      try { settleRelinkAside(vault, e); } catch (err) { e.relinkError = err.message; saveLedger(vault, ledger); out.push(e); continue; }
-      saveLedger(vault, ledger);
-    }
-    if (!e.relink?.length) continue;
-    if (e.status === 'moved' && !e.relinkedAt) { relinkEntry(vault, e, ledger, now); out.push(e); }
-    else if (e.status === 'undone' && !e.unrelinkedAt) { unrelinkEntry(vault, e, ledger, now); out.push(e); }
+    if (!e.relinkAside) continue;
+    try { settleRelinkAside(vault, e, ledger, now); }
+    catch (err) { e.relinkError = `멈춘 링크 고침 정리 실패: ${err.message}`; saveLedger(vault, ledger); out.add(e); }
   }
-  return out;
+  const fwd = ledger.filter((e) => e.relink?.length && e.status === 'moved' && !e.relinkedAt);
+  const bwd = ledger.filter((e) => e.relink?.length && e.status === 'undone' && !e.unrelinkedAt);
+  if (fwd.length) relinkBatch(vault, ledger, fwd, now);
+  if (bwd.length) relinkBatch(vault, ledger, bwd, now, true);
+  pruneKept(vault, ledger, now);
+  return [...out, ...fwd, ...bwd];
 }
 
-/** Undo's half: turn this entry's rewritten references back (every planned note; a crash may have left one unrecorded). */
-function unrelinkEntry(vault, e, ledger, now) {
-  const errs = [];
-  for (const rel of e.relink || []) {
-    try { rewriteNote(vault, rel, e.to, e.from, e, ledger); } catch (err) { if (err.code !== 'ENOENT') errs.push(`${rel}: ${err.message}`); }
-  }
-  if (errs.length) e.unrelinkError = errs.join(' / ');
-  else { delete e.unrelinkError; e.unrelinkedAt = now.toISOString(); }
-  saveLedger(vault, ledger);
-  return errs;
+/** The link-fix errors still recorded for these proposals' moves (shown after a run or tick). */
+export function relinkErrorsFor(vault, ids) {
+  return readArchiveLedger(vault).filter((e) => ids.includes(e.proposalId) && e.status === 'moved' && e.relinkError)
+    .map((e) => ({ id: e.proposalId, error: `옮겼지만 링크를 다 고치지 못함(다음 실행 때 다시): ${e.relinkError}` }));
 }
 
-/** Move one planned row (status ready or half). Returns { ok, error?, relinkErrors? }. opts.beforeUnlink: test hook. */
+/** Move one planned row (status ready or half). Returns { ok, error? }. Links: finishRelinks. opts.beforeUnlink: test hook. */
 export function moveOne(vault, row, now = new Date(), opts = {}) {
   const fa = path.join(vault, row.from), ta = path.join(vault, row.to);
   const ledger = readArchiveLedger(vault);
@@ -519,11 +593,11 @@ export function moveOne(vault, row, now = new Date(), opts = {}) {
   }
   entry.status = 'moved'; entry.movedAt = now.toISOString();
   saveLedger(vault, ledger);
-  // Links next: a crash before they are done leaves relink without relinkedAt, finished by the next run (finishRelinks).
-  const relinkErrors = entry.relink ? relinkEntry(vault, entry, ledger, now) : [];
+  // Links next, batched for the whole run by finishRelinks (the caller runs it after its moves; a crash leaves relink
+  // without relinkedAt, finished by the next run).
   // The note has moved and the ledger says so; a failure closing the card is retried by the next run (status already).
   try { closeProposal(vault, row.id, row.to, now); } catch (e) { return { ok: false, error: `옮겼지만 제안을 닫지 못함: ${e.message}` }; }
-  return { ok: true, relinkErrors };
+  return { ok: true };
 }
 
 /**
@@ -561,9 +635,10 @@ export async function runArchive(ctx, { dryRun = false, limit = Infinity, now = 
     if (out.moved.length >= limit) { out.skipped.push({ ...r, reason: '이번 실행 상한(--limit) 밖' }); continue; }
     const m = moveOne(vault, r, now);
     if (m.ok) out.moved.push(r); else out.errors.push({ ...r, error: m.error });
-    if (m.relinkErrors?.length) out.errors.push({ ...r, error: `옮겼지만 링크를 다 고치지 못함(다음 실행 때 다시): ${m.relinkErrors.join(' / ')}` });
   }
-  finishRelinks(vault, now); // moves closed as «already» this run (a crash recovered) may still have links to fix
+  finishRelinks(vault, now); // the links of this run's moves, in one swap per referencing note
+  const byId = new Map(out.moved.map((r) => [r.id, r]));
+  for (const x of relinkErrorsFor(vault, [...byId.keys()])) out.errors.push({ ...byId.get(x.id), error: x.error });
   return out;
 }
 
@@ -585,13 +660,14 @@ export function undoArchive(vault, ids, { now = new Date() } = {}) {
     fs.unlinkSync(ta);
     e.status = 'undone'; e.undoneAt = now.toISOString();
     saveLedger(vault, ledger);
-    // Links rewritten for this move go back too; a failure stays recorded and finishRelinks retries it.
-    if (e.relink?.length) unrelinkEntry(vault, e, ledger, now);
+    // Links rewritten for this move go back too (batched below); a failure stays recorded and finishRelinks retries it.
     const p = getProposal(vault, e.proposalId);
     if (p) { p.archiveUndoneAt = now.toISOString(); saveProposal(vault, p); }
     out.restored.push(e);
   }
   saveLedger(vault, ledger);
+  const back = out.restored.filter((e) => e.relink?.length);
+  if (back.length) relinkBatch(vault, ledger, back, now, true);
   return out;
 }
 

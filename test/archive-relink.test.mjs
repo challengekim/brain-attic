@@ -208,18 +208,21 @@ test('[relink/r1] an editor saving while we swap never loses its text (new file 
   const abs = path.join(dir, 'n.md');
   fs.writeFileSync(abs, 'old\n');
   const raw = fs.readFileSync(abs);
+  const kd = fs.mkdtempSync(path.join(dir, '..', 'kept-'));
+  let k = 0;
+  const retire = (file) => fs.renameSync(file, path.join(kd, `${k++}`));
   // 1) a new file appears at the path after we set the original aside: kept, ours dropped
-  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, null, { afterAside: () => fs.writeFileSync(abs, 'NEW USER TEXT\n') }), /새로 저장/);
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', { retire, hooks: { afterAside: () => fs.writeFileSync(abs, 'NEW USER TEXT\n') } }), /새로 저장/);
   assert.equal(fs.readFileSync(abs, 'utf8'), 'NEW USER TEXT\n');
   assert.deepEqual(fs.readdirSync(dir).sort(), ['n.md']);
   // 2) the original inode is written in place after we read it: that text is put back over ours
   fs.writeFileSync(abs, 'old\n');
   const raw2 = fs.readFileSync(abs);
-  assert.throws(() => replaceNoteIfUnchanged(abs, raw2, 'ours\n', 0o644, null, { afterLink: (aside) => fs.writeFileSync(aside, 'EDITED IN PLACE\n') }), /바뀜/);
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw2, 'ours\n', { retire, hooks: { afterLink: (aside) => fs.writeFileSync(aside, 'EDITED IN PLACE\n') } }), /바뀜/);
   assert.equal(fs.readFileSync(abs, 'utf8'), 'EDITED IN PLACE\n');
   assert.deepEqual(fs.readdirSync(dir).sort(), ['n.md']);
   // 3) nothing happens meanwhile: ours, no leftovers
-  replaceNoteIfUnchanged(abs, fs.readFileSync(abs), 'ours\n');
+  replaceNoteIfUnchanged(abs, fs.readFileSync(abs), 'ours\n', { retire });
   assert.equal(fs.readFileSync(abs, 'utf8'), 'ours\n');
   assert.deepEqual(fs.readdirSync(dir).sort(), ['n.md']);
 });
@@ -284,15 +287,18 @@ function raceDir() {
   fs.writeFileSync(abs, 'old\n');
   return { dir, abs, raw: fs.readFileSync(abs) };
 }
+// The retire hook takes files that were once at the path out of the way (archive.mjs keeps them under _attic).
+const keptDir = () => fs.mkdtempSync(path.join(testCtx().vault, 'kept-'));
+const retireTo = (kd, log = []) => (file, sha256) => { const d = path.join(kd, `${log.length}.md`); log.push({ d, sha256 }); fs.renameSync(file, d); };
 const leftovers = (dir) => fs.readdirSync(dir).filter((n) => n.startsWith('.attic-'));
 const conflicts = (dir) => fs.readdirSync(dir).filter((n) => n.includes('충돌'));
 
 test('[relink/r2] original edited in place, then a NEW file saved at the path: both survive (newest at the path, the other as a conflict note)', () => {
   const { dir, abs, raw } = raceDir();
-  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, null, {
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', { retire: retireTo(keptDir()), hooks: {
     afterAside: (aside) => fs.writeFileSync(aside, 'save 1\n'),
     afterLink: () => { fs.writeFileSync(path.join(dir, 'x.tmp'), 'save 2\n'); fs.renameSync(path.join(dir, 'x.tmp'), abs); },
-  }));
+  } }));
   assert.equal(fs.readFileSync(abs, 'utf8'), 'save 2\n');
   assert.equal(conflicts(dir).length, 1);
   assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), 'save 1\n');
@@ -301,10 +307,10 @@ test('[relink/r2] original edited in place, then a NEW file saved at the path: b
 
 test('[relink/r2] original edited in place, then OUR new file edited in place: neither edit is lost', () => {
   const { dir, abs, raw } = raceDir();
-  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, null, {
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', { retire: retireTo(keptDir()), hooks: {
     afterAside: (aside) => fs.writeFileSync(aside, 'save 1\n'),
     afterLink: () => fs.writeFileSync(abs, 'save 2\n'),
-  }));
+  } }));
   assert.equal(fs.readFileSync(abs, 'utf8'), 'save 2\n');
   assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), 'save 1\n');
   assert.deepEqual(leftovers(dir), []);
@@ -314,9 +320,9 @@ test('[relink/r2] when neither our file nor the original can be put at the path,
   if (process.getuid?.() === 0) return t.skip('root ignores directory permissions');
   const { dir, abs, raw } = raceDir();
   const calls = [];
-  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, (j) => calls.push(j), {
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', { retire: retireTo(keptDir()), journal: (j) => calls.push(j), hooks: {
     afterAside: () => fs.chmodSync(dir, 0o555),
-  }));
+  } }));
   fs.chmodSync(dir, 0o755);
   assert.ok(calls.at(-1), 'journal must not be cleared');
   assert.equal(fs.readFileSync(calls.at(-1).aside, 'utf8'), 'old\n');
@@ -365,4 +371,105 @@ test('[relink/r3] an open run ends with its list item, and backticks inside a [[
 test('[relink/r3] a quote line does not end an open run (it may continue the paragraph)', () => {
   const t = '> x `` a\n> `' + F + '`\n> ``';
   assert.equal(rewriteRefs(t, F, A + '.md').count, 0);
+});
+
+// ---------------------------------------------------------------- Codex round 3 (P1 ×3)
+const MIN = 60 * 1000;
+const keptFiles = (vault) => { try { return fs.readdirSync(path.join(vault, '_attic/archive/relink-kept')); } catch { return []; } };
+
+test('[relink/r3] our file taken back is never unlinked: a late write through a handle opened earlier survives', () => {
+  const { dir, abs, raw } = raceDir();
+  const log = [];
+  let fd;
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', { retire: retireTo(keptDir(), log), hooks: {
+    afterAside: (aside) => fs.writeFileSync(aside, 'save 1\n'),
+    afterLink: () => { fd = fs.openSync(abs, 'r+'); }, // an editor opened our file before we took it back
+  } }));
+  fs.writeSync(fd, 'LATE\n', 0); fs.closeSync(fd); // ...and writes after
+  assert.equal(fs.readFileSync(abs, 'utf8'), 'save 1\n');
+  const ours = log.find((x) => fs.readFileSync(x.d, 'utf8').startsWith('LATE'));
+  assert.ok(ours, 'the late write must still be on disk');
+  assert.notEqual(crypto.createHash('sha256').update(fs.readFileSync(ours.d)).digest('hex'), ours.sha256); // prune keeps it
+  assert.deepEqual(leftovers(dir), []);
+});
+
+test('[relink/r3] recovery keeps a temp file holding the only copy of an edit, and the prune turns it into a conflict note', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const dir = path.join(vault, '_system/entities');
+  const ent = path.join(dir, '넥덕.md');
+  const ours = fs.readFileSync(ent, 'utf8');
+  // crash right after linking ours: the temp name and the path are one file, the unchanged original is aside
+  fs.linkSync(ent, path.join(dir, '.attic-relink-abc.tmp'));
+  fs.writeFileSync(path.join(dir, '.attic-relink-abc.orig'), ENTITY);
+  fs.writeFileSync(ent, ours + '- 제자리 편집\n'); // in place: the temp name sees it too
+  fs.writeFileSync(path.join(dir, 'x.new'), 'NEW SAVE\n'); fs.renameSync(path.join(dir, 'x.new'), ent); // then a new file
+  const led = readArchiveLedger(vault);
+  const e = led.find((x) => x.proposalId === p.id);
+  const h = (s) => crypto.createHash('sha256').update(s).digest('hex');
+  e.relinkAside = { file: '_system/entities/넥덕.md', aside: '_system/entities/.attic-relink-abc.orig', tmp: '_system/entities/.attic-relink-abc.tmp', sha256: h(ENTITY), newSha256: h(ours) };
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify(led));
+  finishRelinks(vault, LATER);
+  assert.equal(read(vault, '_system/entities/넥덕.md'), 'NEW SAVE\n');
+  assert.deepEqual(leftovers(dir), []);
+  assert.equal(conflicts(dir).length, 0); // still kept under _attic during the grace period
+  finishRelinks(vault, new Date(+LATER + 11 * MIN));
+  assert.equal(conflicts(dir).length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), ours + '- 제자리 편집\n');
+  assert.deepEqual(keptFiles(vault), []); // the unchanged original was dropped by content
+  assert.equal(readArchiveLedger(vault).find((x) => x.proposalId === p.id).relinkKept, undefined);
+});
+
+test('[relink/r3] kept copies: dropped after the grace period only when unchanged; a changed one becomes a conflict note', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const e = readArchiveLedger(vault).find((x) => x.proposalId === p.id);
+  assert.equal(e.relinkKept.length, 1); // the original, kept under _attic for now
+  assert.equal(fs.readFileSync(path.join(vault, e.relinkKept[0].kept), 'utf8'), ENTITY);
+  finishRelinks(vault, new Date(+LATER + 5 * MIN));
+  assert.equal(keptFiles(vault).length, 1);
+  fs.appendFileSync(path.join(vault, e.relinkKept[0].kept), '- 늦게 쓴 메모\n');
+  finishRelinks(vault, new Date(+LATER + 11 * MIN));
+  assert.deepEqual(keptFiles(vault), []);
+  const dir = path.join(vault, '_system/entities');
+  assert.equal(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8'), ENTITY + '- 늦게 쓴 메모\n');
+});
+
+test('[relink/r3] a wikilink inside a code span that crosses lines is not rewritten, and the plan blocks on it', () => {
+  const t = 'example `` start\n[[10_Knowledge/References/A/c]]\nend ``\n';
+  assert.equal(rewriteRefs(t, '10_Knowledge/References/A/c.md', '90_Archive/10_Knowledge/References/A/c.md').count, 0);
+  assert.equal(rewriteRefs('a `` b [[x/y]] c\n', 'x/y.md', '90_Archive/x/y.md').count, 0); // after the open run, same line
+  assert.equal(rewriteRefs('[[x/y]] a `` b\n', 'x/y.md', '90_Archive/x/y.md').count, 1); // before it
+  const { vault } = setup();
+  note(vault, '10_Knowledge/References/A/c.md');
+  note(vault, 'hub.md', t);
+  const [r] = planArchive(vault, [approvedDrop(vault, '10_Knowledge/References/A/c.md')]);
+  assert.equal(r.status, 'blocked');
+});
+
+test('[relink/r3] notes moved in one run are relinked in ONE swap per referencing note (forward and undo)', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  const G = '10_Knowledge/References/RSS/Articles/두번째.md';
+  note(vault, F); note(vault, G);
+  const idx = `- \`${F}\`\n- \`${G}\`\n- [[${P}|a]] [[${G.replace(/\.md$/, '')}|b]]\n`;
+  note(vault, '_system/wiki/index.md', idx);
+  const ps = [approvedDrop(vault, F), approvedDrop(vault, G)];
+  const r = await runArchive(ctx, { now: LATER });
+  assert.equal(r.moved.length, 2, JSON.stringify(r.errors));
+  assert.equal(read(vault, '_system/wiki/index.md'), idx.replaceAll('10_Knowledge/', '90_Archive/10_Knowledge/'));
+  const led = readArchiveLedger(vault);
+  assert.equal(led.flatMap((x) => x.relinkKept || []).length, 1); // one swap: one original kept
+  assert.ok(ps.every((p) => led.find((x) => x.proposalId === p.id).relinkedAt));
+  undoArchive(vault, ps.map((p) => p.id), { now: LATER });
+  assert.equal(read(vault, '_system/wiki/index.md'), idx);
+  assert.equal(readArchiveLedger(vault).flatMap((x) => x.relinkKept || []).length, 2);
 });
