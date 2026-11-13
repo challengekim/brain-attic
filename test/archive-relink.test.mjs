@@ -361,3 +361,8 @@ test('[relink/r3] an open run ends with its list item, and backticks inside a [[
   assert.equal(r.count, 2);
   assert.equal(r.text, '- [[a `b]] — x\n  `c\n- `' + A + '.md` — t\n- [[d `e]] `' + A + '.md`');
 });
+
+test('[relink/r3] a quote line does not end an open run (it may continue the paragraph)', () => {
+  const t = '> x `` a\n> `' + F + '`\n> ``';
+  assert.equal(rewriteRefs(t, F, A + '.md').count, 0);
+});

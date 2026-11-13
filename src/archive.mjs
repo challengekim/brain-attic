@@ -76,7 +76,7 @@ function wikiTarget(inner) {
   return inner.split(/[|#^]/)[0].replace(/\\$/, '').trim().replace(/\.md$/i, '').replace(/^\/+/, '');
 }
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
-const BLOCK_START = /^ {0,3}([-*+]|\d{1,9}[.)])(\s|$)|^ {0,3}#{1,6}(\s|$)|^ {0,3}>/; // list item, heading, quote
+const BLOCK_START = /^ {0,3}([-*+]|\d{1,9}[.)])(\s|$)|^ {0,3}#{1,6}(\s|$)/; // list item, heading (a quote line may continue a paragraph)
 
 /**
  * Inline code spans of one line (CommonMark: a backtick run closes at the next run of the same length).
