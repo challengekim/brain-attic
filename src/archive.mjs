@@ -1,17 +1,22 @@
 // Archive executor (D-003, 2026-11-09): an approved d card (archive_note) moves its vault note to
 // 90_Archive/<same relative path>, the vault's archive convention (_system/VAULT_SETUP.md, and the notes archived by
-// hand before this existed). This is the ONE place brain-attic writes outside _attic/, and it only ever moves:
+// hand before this existed). This is the ONE place brain-attic writes outside _attic/: it moves the note, and rewrites
+// the references to its full path in other notes (2026-11-13 owner brief) — nothing else:
 //   - link(from, to) then unlink(from): never overwrites a file at the target (link fails if it exists), same inode,
 //     so the content cannot change on the way; sha256 is still checked before and after.
 //   - each move is recorded in _attic/archive/ledger.json (intent first, then the result) and `attic archive undo`
 //     reverses it the same way.
-//   - a note that other notes reach by a path ([[folder/note]], [text](path.md)) or whose name is not unique in the
-//     vault is not moved: Obsidian finds [[name]] links by file name, so only those survive a move.
+//   - a note other notes reach by its FULL vault path ([[10_Knowledge/…/note|t]], or the path written out as text such
+//     as the wiki index's `10_Knowledge/…/note.md`) is moved and those references are rewritten to 90_Archive/… (an
+//     atomic rename per note, only if it did not change meanwhile; recorded in the ledger, reversed by undo). Notes
+//     under _attic/ or 90_Archive/ and notes that move themselves are never edited: their path links still block.
+//   - any other path reference (partial or case-differing [[folder/note]], [text](path.md)) or a name that is not
+//     unique in the vault still blocks the move: Obsidian finds [[name]] links by file name, so those survive a move.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { requireVault } from './config.mjs';
-import { atticPath, atticWritePath, ensureSkeleton, writeAtticJson } from './vault.mjs';
+import { atticPath, atticWritePath, ensureSkeleton, replaceNoteIfUnchanged, writeAtticJson } from './vault.mjs';
 import { readJson } from './util.mjs';
 import { getProposal, isApplicable, listProposals, saveProposal } from './proposals.mjs';
 
@@ -66,6 +71,43 @@ function walkMd(vault) {
 }
 
 const WIKI = /!?\[\[([^\]\n]+?)\]\]/g;
+/** The note a [[wikilink]] names: before | # ^ (a table's escaped \| too), no .md, no leading /. Case kept. */
+function wikiTarget(inner) {
+  return inner.split(/[|#^]/)[0].replace(/\\$/, '').trim().replace(/\.md$/i, '').replace(/^\/+/, '');
+}
+const PATH_CHAR = /[\p{L}\p{N}_\-./]/u;
+const NAME_CHAR = /[\p{L}\p{N}_\-]/u;
+
+/**
+ * Rewrite the references to one note's full vault path from `fromRel` to `toRel` (both .md paths), and nothing else:
+ *   - [[wikilinks]] whose target is exactly that path (with or without .md or a leading /): only the target changes,
+ *     the alias, heading, block, embed ! and a table's \| stay;
+ *   - the .md path written as text (e.g. `10_Knowledge/…/x.md` in the wiki index) when it is not part of a longer
+ *     path or name (`x/<path>`, `<path>x`, `<path>.bak`) — so an already archived `90_Archive/<path>` is never doubled.
+ * Partial or case-differing paths and markdown links are not touched (they block the move instead). Reversible:
+ * rewriteRefs(rewriteRefs(t, a, b).text, b, a) gives t back unless t already spelled b. Returns { text, count }.
+ */
+export function rewriteRefs(text, fromRel, toRel) {
+  const a = noExt(fromRel), b = noExt(toRel);
+  let count = 0;
+  const linked = text.replace(WIKI, (m, inner) => {
+    if (wikiTarget(inner) !== a) return m;
+    const i = inner.indexOf(a); // only blanks and slashes can come before it
+    count++;
+    return m.slice(0, m.indexOf('[[') + 2) + inner.slice(0, i) + b + inner.slice(i + a.length) + ']]';
+  });
+  let out = '', from = 0, k;
+  while ((k = linked.indexOf(fromRel, from)) >= 0) {
+    const prev = k > 0 ? linked[k - 1] : '';
+    const next = linked[k + fromRel.length] || '';
+    const after = linked[k + fromRel.length + 1] || '';
+    if ((prev && PATH_CHAR.test(prev)) || (next && NAME_CHAR.test(next)) || (next === '.' && after && NAME_CHAR.test(after))) {
+      out += linked.slice(from, k + 1); from = k + 1; continue;
+    }
+    out += linked.slice(from, k) + toRel; from = k + fromRel.length; count++;
+  }
+  return { text: out + linked.slice(from), count };
+}
 const REFDEF = /^\s{0,3}\[[^\]\n]+\]:\s*(.*)$/;
 
 /**
@@ -96,7 +138,9 @@ function decodeLoose(s) {
 /**
  * One pass over every note: which of `files` other notes link to, and how.
  *   name   [[basename]] links (survive a move when the name is unique)
- *   path   [[folder/…/basename]] links (block: a path link may stop resolving)
+ *   exact  [[full/vault/path]] links from a note we may edit: rewritten on the move (`relink`: those notes, plus the
+ *          ones that write the full path as text), so they do not block
+ *   path   other [[folder/…/basename]] links (block: a path link may stop resolving)
  *   md     [text](relative/or/root/path.md) links that resolve to the file (block)
  *   attic  links of either kind from _attic/ (brain-attic's own generated sheets: counted, never block)
  *   pathMentions  the file's path written as plain text outside _attic (e.g. the wiki index): becomes stale, reported
@@ -104,7 +148,8 @@ function decodeLoose(s) {
  */
 export function linkIndex(vault, files) {
   const all = walkMd(vault);
-  const want = new Map(files.map((f) => [f, { name: 0, path: 0, md: 0, attic: 0, pathMentions: 0, sameName: 0, from: [] }]));
+  const want = new Map(files.map((f) => [f, { name: 0, exact: 0, path: 0, md: 0, attic: 0, pathMentions: 0, sameName: 0, from: [], relink: new Set() }]));
+  const moving = new Set(files);
   const byName = new Map();
   for (const f of files) {
     const n = path.posix.basename(noExt(f)).toLowerCase();
@@ -127,13 +172,16 @@ export function linkIndex(vault, files) {
     try { text = fs.readFileSync(path.join(vault, rel), 'utf8'); } catch { continue; }
     if (!text.includes('[[') && !text.includes('](') && !text.includes(']:') && !files.some((f) => text.includes(f))) continue;
     const inAttic = rel.startsWith('_attic/');
+    // A note we may rewrite: not brain-attic's own records, not an archived note (its hash is in the ledger), not a note
+    // that moves itself (its hash is checked on the way).
+    const editable = !inAttic && !rel.startsWith(`${ARCHIVE_ROOT}/`) && !moving.has(rel);
     const hit = (f, kind) => { if (f === rel) return; const w = want.get(f); if (inAttic) w.attic++; else { w[kind]++; if (w.from.length < 5 && !w.from.includes(rel)) w.from.push(rel); } };
     for (const m of text.matchAll(WIKI)) {
-      const target = m[1].split('|')[0].split('#')[0].split('^')[0].trim().replace(/\.md$/i, '').replace(/^\/+/, '');
+      const target = wikiTarget(m[1]);
       if (!target) continue;
       if (target.includes('/')) {
         const t = target.toLowerCase();
-        for (const [p, f] of byPath) if (p === t || p.endsWith('/' + t)) hit(f, 'path');
+        for (const [p, f] of byPath) if (p === t || p.endsWith('/' + t)) hit(f, editable && target === noExt(f) ? 'exact' : 'path');
       } else for (const f of byName.get(target.toLowerCase()) || []) hit(f, 'name');
     }
     if (text.includes('](') || text.includes(']:')) {
@@ -146,6 +194,7 @@ export function linkIndex(vault, files) {
       }
     }
     if (!inAttic) for (const f of files) if (f !== rel && text.includes(f)) want.get(f).pathMentions++;
+    if (editable) for (const f of files) if (text.includes(noExt(f)) && rewriteRefs(text, f, archiveTarget(f)).count) want.get(f).relink.add(rel);
   }
   return want;
 }
@@ -198,9 +247,9 @@ export function planArchive(vault, proposals = null, { index = null } = {}) {
     for (const r of ready) {
       const l = idx.get(r.from);
       if (!l) continue;
-      r.links = { name: l.name, path: l.path, md: l.md, attic: l.attic, pathMentions: l.pathMentions, sameName: l.sameName };
+      r.links = { name: l.name, exact: l.exact, path: l.path, md: l.md, attic: l.attic, pathMentions: l.pathMentions, sameName: l.sameName };
       const why = linkBlock(l); // a half-finished move too: removing the old entry would break the same links
-      if (why) { r.status = 'blocked'; r.reason = why; }
+      if (why) { r.status = 'blocked'; r.reason = why; } else if (l.relink.size) r.relink = [...l.relink].sort();
     }
   }
   return rows;
@@ -283,12 +332,67 @@ export function recoverAside(vault, now = new Date()) {
   return out;
 }
 
-/** Move one planned row (status ready or half). Returns { ok, error? }. opts.beforeUnlink: test hook. */
+/**
+ * Rewrite one note's references from `fromRel` to `toRel` in place: a regular UTF-8 file with no symlink on the way and
+ * no second hard link; written to a fresh temp file next to it and renamed over it, only if the note still reads the
+ * same as when we read it. Returns the number of references changed (0 = nothing to do, nothing written).
+ */
+function rewriteNote(vault, rel, fromRel, toRel) {
+  const parts = String(rel).split('/');
+  if (!rel || path.isAbsolute(rel) || parts.some((p) => !p || p === '.' || p === '..') || !/\.md$/i.test(rel)) throw new Error('볼트 안 노트 경로가 아님');
+  if (['_attic', ARCHIVE_ROOT].includes(parts[0])) throw new Error(`${parts[0]} 아래 노트는 고치지 않음`);
+  const sym = symlinkOnTarget(vault, rel);
+  if (sym) throw new Error(sym);
+  const abs = path.join(vault, rel);
+  const st = fs.lstatSync(abs);
+  if (!st.isFile()) throw new Error('파일이 아님');
+  if (st.nlink > 1) throw new Error('하드 링크가 더 있는 파일 — 고치지 않음');
+  const raw = fs.readFileSync(abs);
+  const text = raw.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(raw)) throw new Error('UTF-8 이 아닌 노트 — 고치지 않음');
+  const r = rewriteRefs(text, fromRel, toRel);
+  if (!r.count) return 0;
+  replaceNoteIfUnchanged(abs, raw, r.text, st.mode & 0o777);
+  return r.count;
+}
+
+/** Rewrite the references for one moved entry (old path -> archive path); records what was done. Returns error texts. */
+function relinkEntry(vault, entry, ledger, now) {
+  const done = new Map((entry.relinked || []).map((x) => [x.file, x]));
+  const errors = [];
+  for (const rel of entry.relink || []) {
+    if (done.has(rel)) continue;
+    try { done.set(rel, { file: rel, count: rewriteNote(vault, rel, entry.from, entry.to) }); }
+    catch (e) {
+      if (e.code === 'ENOENT') done.set(rel, { file: rel, count: 0, missing: true }); // the note is gone: nothing to fix
+      else errors.push(`${rel}: ${e.message}`);
+    }
+  }
+  entry.relinked = (entry.relink || []).filter((r) => done.has(r)).map((r) => done.get(r));
+  if (errors.length) entry.relinkError = errors.join(' / ');
+  else { delete entry.relinkError; entry.relinkedAt = now.toISOString(); }
+  saveLedger(vault, ledger);
+  return errors;
+}
+
+/** Before (and after) a run: finish the link rewrites of moves that stopped before them. Returns the entries touched. */
+export function finishRelinks(vault, now = new Date()) {
+  const ledger = readArchiveLedger(vault);
+  const out = [];
+  for (const e of ledger) {
+    if (e.status !== 'moved' || !e.relink?.length || e.relinkedAt) continue;
+    relinkEntry(vault, e, ledger, now);
+    out.push(e);
+  }
+  return out;
+}
+
+/** Move one planned row (status ready or half). Returns { ok, error?, relinkErrors? }. opts.beforeUnlink: test hook. */
 export function moveOne(vault, row, now = new Date(), opts = {}) {
   const fa = path.join(vault, row.from), ta = path.join(vault, row.to);
   const ledger = readArchiveLedger(vault);
   const hash = sha(fa);
-  const entry = { proposalId: row.id, from: row.from, to: row.to, sha256: hash, bytes: fs.statSync(fa).size, status: 'moving', startedAt: now.toISOString() };
+  const entry = { proposalId: row.id, from: row.from, to: row.to, sha256: hash, bytes: fs.statSync(fa).size, status: 'moving', startedAt: now.toISOString(), ...(row.relink?.length ? { relink: [...row.relink] } : {}) };
   ledger.push(entry);
   saveLedger(vault, ledger); // intent first: a crash in between leaves a record of where the note went
   try {
@@ -309,9 +413,11 @@ export function moveOne(vault, row, now = new Date(), opts = {}) {
   }
   entry.status = 'moved'; entry.movedAt = now.toISOString();
   saveLedger(vault, ledger);
+  // Links next: a crash before they are done leaves relink without relinkedAt, finished by the next run (finishRelinks).
+  const relinkErrors = entry.relink ? relinkEntry(vault, entry, ledger, now) : [];
   // The note has moved and the ledger says so; a failure closing the card is retried by the next run (status already).
   try { closeProposal(vault, row.id, row.to, now); } catch (e) { return { ok: false, error: `옮겼지만 제안을 닫지 못함: ${e.message}` }; }
-  return { ok: true };
+  return { ok: true, relinkErrors };
 }
 
 /**
@@ -334,7 +440,7 @@ export function closeAlready(vault, row, now = new Date()) {
 export async function runArchive(ctx, { dryRun = false, limit = Infinity, now = new Date(), proposals = null } = {}) {
   const vault = requireVault(ctx);
   ensureSkeleton(vault);
-  if (!dryRun) recoverAside(vault, now);
+  if (!dryRun) { recoverAside(vault, now); finishRelinks(vault, now); }
   const ps = (proposals || listProposals(vault, { status: 'approved' })).filter((p) => p.payload?.op === 'archive_note' && isApplicable(p))
     .sort((x, y) => String(x.createdAt).localeCompare(String(y.createdAt)) || String(x.payload.file).localeCompare(String(y.payload.file)));
   const plan = planArchive(vault, ps);
@@ -349,7 +455,9 @@ export async function runArchive(ctx, { dryRun = false, limit = Infinity, now = 
     if (out.moved.length >= limit) { out.skipped.push({ ...r, reason: '이번 실행 상한(--limit) 밖' }); continue; }
     const m = moveOne(vault, r, now);
     if (m.ok) out.moved.push(r); else out.errors.push({ ...r, error: m.error });
+    if (m.relinkErrors?.length) out.errors.push({ ...r, error: `옮겼지만 링크를 다 고치지 못함(다음 실행 때 다시): ${m.relinkErrors.join(' / ')}` });
   }
+  finishRelinks(vault, now); // moves closed as «already» this run (a crash recovered) may still have links to fix
   return out;
 }
 
@@ -370,6 +478,13 @@ export function undoArchive(vault, ids, { now = new Date() } = {}) {
     if (sha(fa) !== e.sha256) { fs.unlinkSync(fa); out.refused.push({ proposalId: e.proposalId, from: e.from, reason: '되돌린 파일 해시가 다름' }); continue; }
     fs.unlinkSync(ta);
     e.status = 'undone'; e.undoneAt = now.toISOString();
+    // Links rewritten for this move go back too (every planned note: a crash may have left a rewrite unrecorded).
+    const errs = [];
+    for (const rel of e.relink || []) {
+      try { rewriteNote(vault, rel, e.to, e.from); } catch (err) { if (err.code !== 'ENOENT') errs.push(`${rel}: ${err.message}`); }
+    }
+    if (e.relink?.length) e.unrelinkedAt = now.toISOString();
+    if (errs.length) e.unrelinkError = errs.join(' / ');
     const p = getProposal(vault, e.proposalId);
     if (p) { p.archiveUndoneAt = now.toISOString(); saveProposal(vault, p); }
     out.restored.push(e);
@@ -387,7 +502,8 @@ export function renderPlan(plan) {
     L.push(`- [${STATUS_KO[r.status]}] ${r.id}  ${r.from}`);
     if (r.to && ['ready', 'half', 'already', 'conflict', 'blocked'].includes(r.status)) L.push(`    -> ${r.to}`);
     if (r.reason) L.push(`    ${r.reason}`);
-    if (r.links) L.push(`    링크: 이름 [[ ]] ${r.links.name} · 경로 ${r.links.path + r.links.md} · attic 기록 ${r.links.attic} · 경로 언급(색인 등) ${r.links.pathMentions}${r.leavesPublic ? ' · 공개 재료 허용 목록에서 빠짐' : ''}`);
+    if (r.relink?.length) L.push(`    경로 링크·경로 표기 고칠 노트 ${r.relink.length}개: ${r.relink.slice(0, 5).join(', ')}${r.relink.length > 5 ? ' …' : ''}`);
+    if (r.links) L.push(`    링크: 이름 [[ ]] ${r.links.name} · 고칠 경로 링크 ${r.links.exact} · 막는 경로 링크 ${r.links.path + r.links.md} · attic 기록 ${r.links.attic} · 경로 언급(색인 등) ${r.links.pathMentions}${r.leavesPublic ? ' · 공개 재료 허용 목록에서 빠짐' : ''}`);
   }
   return L.join('\n');
 }

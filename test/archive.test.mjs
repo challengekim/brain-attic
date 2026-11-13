@@ -80,7 +80,7 @@ test('[archive] links: a unique-name [[wikilink]] survives the move; path links,
   note(vault, '10_Knowledge/References/A/attic-only.md');
   note(vault, '2026-11-01.md', [
     '- [[plain]] — 이름 링크', '- [[plain|별칭]] ![[plain#제목]]',
-    '- [[10_Knowledge/References/A/pathlinked]]',
+    '- [[A/pathlinked]]', // a partial path: not rewritten, still blocks
     '- [보기](10_Knowledge/References/A/mdlinked%20note.md)',
     '- [[twin]]', '- `10_Knowledge/References/A/plain.md` (경로 언급)', '',
   ].join('\n'));
@@ -193,7 +193,7 @@ test('[archive] apply moves approved d cards (whitelisted) and writes no instruc
   const { vault } = ctx;
   note(vault, '10_Knowledge/References/A/ok.md');
   note(vault, '10_Knowledge/References/A/linked.md');
-  note(vault, '2026-11-01.md', '[[10_Knowledge/References/A/linked]]\n');
+  note(vault, '2026-11-01.md', '[[A/linked]]\n'); // partial path: blocks (a full path is rewritten, see archive-relink)
   const ok = approvedDrop(vault, '10_Knowledge/References/A/ok.md');
   const linked = approvedDrop(vault, '10_Knowledge/References/A/linked.md');
   const r = await apply(ctx, { now: LATER });
@@ -340,7 +340,7 @@ test('[archive/r1] a half-finished move is also held back when links now point a
   note(vault, '10_Knowledge/References/A/x.md');
   fs.mkdirSync(path.join(vault, '90_Archive/10_Knowledge/References/A'), { recursive: true });
   fs.linkSync(path.join(vault, '10_Knowledge/References/A/x.md'), path.join(vault, '90_Archive/10_Knowledge/References/A/x.md'));
-  note(vault, '2026-11-01.md', '[[10_Knowledge/References/A/x]]\n');
+  note(vault, '2026-11-01.md', '[[References/A/x]]\n');
   const [r] = planArchive(vault, [approvedDrop(vault, '10_Knowledge/References/A/x.md')]);
   assert.equal(r.status, 'blocked');
 });

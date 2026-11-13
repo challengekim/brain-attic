@@ -10,7 +10,7 @@ import { readJson } from './util.mjs';
 import { sourceName, sourceUrl } from './collect.mjs';
 import { applyTry } from './todo.mjs';
 import { addRule } from './feedback.mjs';
-import { closeAlready, linkIndex, moveOne, planArchive, recoverAside } from './archive.mjs';
+import { closeAlready, finishRelinks, linkIndex, moveOne, planArchive, recoverAside } from './archive.mjs';
 
 export const WHITELIST = ['add_source', 'remove_source', 'set_triage_budget', 'queue_teach', 'add_triage_rule', 'archive_note'];
 
@@ -43,6 +43,7 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
   const archiveRow = (p) => {
     if (!archivePlan) {
       recoverAside(vault, now);
+      finishRelinks(vault, now);
       const ps = listProposals(vault, { status: 'approved' }).filter((q) => q.payload?.op === 'archive_note' && isApplicable(q));
       const files = ps.map((q) => q.payload.file).filter((f) => typeof f === 'string');
       archivePlan = new Map(planArchive(vault, ps, { index: linkIndex(vault, files) }).map((r) => [r.id, r]));
@@ -96,6 +97,7 @@ export async function apply(ctx, { now = new Date(), onlyAuto = false } = {}) {
           const m = moveOne(vault, row, now);
           if (m.ok) result.applied.push({ id: p.id, op, to: row.to, ...(p.autoApplied ? { auto: true } : {}) });
           else result.errors.push({ id: p.id, error: m.error });
+          if (m.relinkErrors?.length) result.errors.push({ id: p.id, error: `옮겼지만 링크를 다 고치지 못함(다음 실행 때 다시): ${m.relinkErrors.join(' / ')}` });
         } else result.skipped.push({ id: p.id, reason: `보관 안 함 — ${row?.reason || '계획 없음'}` });
       } else if (op === 'try_in_project') {
         // Own path: instruction file + (with config.todo) one outside task, under a per-proposal lock (see todo.mjs).

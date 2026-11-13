@@ -1,5 +1,6 @@
 // Vault helpers. brain-attic only WRITES under <vault>/_attic/. User notes are read-only -- the one exception is
-// src/archive.mjs, which MOVES an approved d note to 90_Archive/ (never edits or deletes one).
+// src/archive.mjs, which MOVES an approved d note to 90_Archive/ and rewrites the references to that note's full path
+// in other notes (replaceNoteIfUnchanged below). It never deletes a note.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -68,6 +69,20 @@ export function copyIntoAttic(vault, rel, srcFile) {
 }
 
 /** Per-vault random id (created once). Proposal ids derive from it so they cannot collide with another vault's. */
+/**
+ * The one write brain-attic makes to a note outside _attic/ (archive relink, src/archive.mjs, which checks the path):
+ * replace `abs` with `text` only if it still holds exactly `raw` — via a fresh temp file next to it (wx) renamed over
+ * it, so the note is never half-written. Throws if it changed meanwhile (nothing written).
+ */
+export function replaceNoteIfUnchanged(abs, raw, text, mode = 0o644) {
+  const tmp = path.join(path.dirname(abs), `.attic-relink-${crypto.randomBytes(6).toString('hex')}.tmp`);
+  fs.writeFileSync(tmp, text, { flag: 'wx', mode });
+  try {
+    if (!fs.readFileSync(abs).equals(raw)) throw new Error('고치는 사이에 노트가 바뀜 — 다음 실행 때 다시 고침');
+    fs.renameSync(tmp, abs);
+  } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+}
+
 export function getInstanceId(vault) {
   const rel = 'state/instance.json';
   const cur = readJson(atticPath(vault, rel), null);
