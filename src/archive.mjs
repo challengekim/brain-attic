@@ -158,11 +158,14 @@ export function rewriteRefs(text, fromRel, toRel) {
       if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(body)) fence = null;
       return line;
     }
-    if (region || touches(line)) { region = regionAfter(line, region); spanOpen = false; return line; } // left as a whole
+    // A skipped line keeps an open code span open, and a backtick run it leaves open may start one (never trusted).
+    const skip = () => { spanOpen = spanOpen || codeSpans(line).openAt >= 0; return line; };
+    if (region) { region = regionAfter(line, region); return skip(); }
+    if (f && !(f[1][0] === '`' && body.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; } // its info string is not parsed
+    if (touches(line)) { region = regionAfter(line, null); return skip(); } // left as a whole
     if (!line.trim()) { spanOpen = false; return line; }
     // 4+ spaces or a tab: indented code, or a continuation we cannot tell from it — never touched.
-    if (/^( {4}| {0,3}\t)/.test(body)) return line;
-    if (f && !(f[1][0] === '`' && body.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; }
+    if (/^( {4}| {0,3}\t)/.test(body)) return skip();
     if (BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
     const wikis = [...line.matchAll(WIKI)].map((m) => ({ s: m.index, e: m.index + m[0].length, m }));
     const { spans, openAt } = codeSpans(line, wikis);

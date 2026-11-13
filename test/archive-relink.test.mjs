@@ -580,3 +580,17 @@ test('[relink/r6-self] fences and indented code inside a quote or a list item ar
   assert.equal(rewriteRefs('> ```\n> a\n> ```\n> [[x/y]]\n', 'x/y.md', to).count, 1);
   assert.equal(rewriteRefs('> [[x/y]]\n- [[x/y]]\n  `x/y.md`\n', 'x/y.md', to).count, 3);
 });
+
+// ---------------------------------------------------------------- Codex round 7 (P1 ×2)
+test('[relink/r7] a skipped line never ends (and may start) an open code span; a fence opener is a fence even with markers', () => {
+  const to = '90_Archive/x/y.md';
+  for (const t of [
+    'example `` start\na <!-- -->\n[[x/y]]\nend ``\n',
+    'example `` start\na %% b %%\n[[x/y]]\nend ``\n',
+    'a\n    x `` y\n[[x/y]] ``\n',
+    'a <!-- `` -->\n[[x/y]] ``\n',
+    '``` <!-- -->\n[[x/y]]\n```\n',
+    '~~~ %%\n`x/y.md`\n~~~\n',
+  ]) assert.equal(rewriteRefs(t, 'x/y.md', to).count, 0, JSON.stringify(t));
+  assert.equal(rewriteRefs('``` <!--\na\n```\n[[x/y]]\n', 'x/y.md', to).count, 1); // the fence closes; no region was opened
+});
