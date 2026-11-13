@@ -102,11 +102,39 @@ function codeSpans(line, wikis = []) {
 }
 
 /**
+ * Regions rewriteRefs never edits: HTML code/comment blocks (<pre>, <code>, <!-- -->, <script>, <style>, <textarea>),
+ * Obsidian %% comments, $$ math. regionAfter(line, open) = the region still open after this line (null = none), given
+ * the one open before it; touches(line) = the line has any of these markers (then it is left alone as a whole).
+ */
+const REGIONS = [['<!--', '-->'], ['<pre', '</pre'], ['<code', '</code'], ['<script', '</script'], ['<style', '</style'], ['<textarea', '</textarea']];
+const TOGGLES = ['%%', '$$'];
+function regionAfter(line, open) {
+  const low = line.toLowerCase();
+  let i = 0;
+  for (;;) {
+    if (open) { // the marker that closes it, from here on
+      const j = low.indexOf(open, i);
+      if (j < 0) return open;
+      i = j + open.length; open = null;
+      continue;
+    }
+    // the earliest opener from here on
+    let best = null;
+    for (const [o, c] of REGIONS) { const j = low.indexOf(o, i); if (j >= 0 && (!best || j < best.j)) best = { j, len: o.length, close: c }; }
+    for (const t of TOGGLES) { const j = low.indexOf(t, i); if (j >= 0 && (!best || j < best.j)) best = { j, len: t.length, close: t }; }
+    if (!best) return null;
+    open = best.close; i = best.j + best.len;
+  }
+}
+const touches = (line) => /<!--|-->|<\/?(pre|code|script|style|textarea)\b|%%|\$\$/i.test(line);
+
+/**
  * Rewrite the references to one note's full vault path from `fromRel` to `toRel` (both .md paths), and nothing else:
  *   - [[wikilinks]] whose target is exactly that path (with or without .md or a leading /): only the target changes,
  *     the alias, heading, block, embed ! and a table's \| stay;
  *   - an inline code span that is exactly that .md path (`` `10_Knowledge/…/x.md` ``, the wiki index's form).
- * Untouched: fenced code blocks (closed only by the same char, at least as long), indented code blocks, other code spans (and wikilinks
+ * Untouched: fenced code blocks (closed only by the same char, at least as long), any line indented 4 spaces or a tab,
+ * HTML code/comment regions, %% comments, $$ math (see regionAfter), other code spans (and wikilinks
  * inside them), anything a backtick run left open earlier in the same block may still be spanning (a `path` there stays
  * a stale mention; an exact link there blocks the move, see linkIndex), code spans inside a wikilink, bare text, URLs, other notes' links and aliases. Partial or
  * case-differing paths and markdown links block the move instead. Reversible: rewriteRefs(rewriteRefs(t, a, b).text,
@@ -117,20 +145,21 @@ export function rewriteRefs(text, fromRel, toRel) {
   let count = 0;
   let fence = null; // the open fence: { ch, len }
   let spanOpen = false; // an unclosed backtick run earlier in this paragraph: code spans here are not trusted
-  // The kind of the previous line: an indented code block (4 spaces or a tab) cannot interrupt a paragraph, but starts
-  // after anything else — a blank line, a heading, a rule, a closed fence, another code line.
-  let prev = 'blank';
+  // Regions we never touch, decided conservatively (a misread only skips a rewrite; linkIndex then blocks the move):
+  // HTML code/comment blocks, Obsidian %% comments, $$ math. `region` = the marker that closes the open one.
+  let region = null;
   const lines = text.split('\n').map((line) => {
     const f = FENCE_OPEN.exec(line);
     if (fence) {
-      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) { fence = null; prev = 'block'; }
+      if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) fence = null;
       return line;
     }
-    if (!line.trim()) { spanOpen = false; prev = 'blank'; return line; }
-    if (/^( {4}| {0,3}\t)/.test(line) && prev !== 'para') { spanOpen = false; prev = 'block'; return line; } // indented code
+    if (region || touches(line)) { region = regionAfter(line, region); spanOpen = false; return line; } // left as a whole
+    if (!line.trim()) { spanOpen = false; return line; }
+    // 4+ spaces or a tab: indented code, or a continuation we cannot tell from it — never touched.
+    if (/^( {4}| {0,3}\t)/.test(line)) return line;
     if (f && !(f[1][0] === '`' && line.slice(f[0].length).includes('`'))) { fence = { ch: f[1][0], len: f[1].length }; spanOpen = false; return line; }
     if (BLOCK_START.test(line)) spanOpen = false; // a span never crosses into a new block
-    prev = /^ {0,3}(#{1,6}(\s|$)|([-*_])( *\3){2,} *$|=+ *$)/.test(line) ? 'block' : 'para'; // heading, rule, setext line
     const wikis = [...line.matchAll(WIKI)].map((m) => ({ s: m.index, e: m.index + m[0].length, m }));
     const { spans, openAt } = codeSpans(line, wikis);
     // A span crossing lines may hide a link or `path` inside it: only what ends before an open run is trusted.

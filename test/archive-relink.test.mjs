@@ -532,7 +532,7 @@ test('[relink/r4] a kept copy any process still holds open is never removed, eve
 test('[relink/r4-self] an indented code block (4 spaces or a tab after a blank line) is code: untouched, and the plan blocks', () => {
   const to = '90_Archive/x/y.md';
   assert.equal(rewriteRefs('a\n\n    [[x/y]] `x/y.md`\n\tmore [[x/y]]\n', 'x/y.md', to).count, 0);
-  assert.equal(rewriteRefs('a\n    [[x/y]]\n', 'x/y.md', to).count, 1); // after a paragraph line: a continuation, not code
+  assert.equal(rewriteRefs('a\n    [[x/y]]\n', 'x/y.md', to).count, 0); // r6: any 4-space line is left alone (blocks instead)
   assert.equal(rewriteRefs('a\n\n    code\nback [[x/y]]\n', 'x/y.md', to).count, 1);
   const { vault } = setup();
   note(vault, 'x/y.md');
@@ -546,6 +546,28 @@ test('[relink/r5] an indented code block may start right after any non-paragraph
   for (const head of ['# Example', '---', '***', '```\ncode\n```', 'Title\n===']) {
     assert.equal(rewriteRefs(`${head}\n    [[x/y]]\n`, 'x/y.md', to).count, 0, head);
   }
-  assert.equal(rewriteRefs('- item\n    [[x/y]]\n', 'x/y.md', to).count, 1); // continues the item's paragraph
+  assert.equal(rewriteRefs('- item\n    [[x/y]]\n', 'x/y.md', to).count, 0); // r6: left alone even as a continuation
   assert.equal(rewriteRefs('# Example\n[[x/y]]\n', 'x/y.md', to).count, 1);
+});
+
+// ---------------------------------------------------------------- Codex round 6 (P1) — conservative by construction
+test('[relink/r6] never rewritten: any 4-space/tab-indented line, HTML code/comment regions, %% comments, $$ math', () => {
+  const to = '90_Archive/x/y.md';
+  const none = [
+    'Title\n--\n    [[x/y]]\n', 'Title\n-\n    [[x/y]]\n', 'a\n    [[x/y]]\n', '- item\n    [[x/y]]\n', '\t[[x/y]]\n', '  \t`x/y.md`\n',
+    '<pre>\n[[x/y]]\n</pre>\n', '<code>[[x/y]]</code>\n', '<!-- [[x/y]] -->\n', '<!--\n[[x/y]]\n-->\n', '<PRE class="a">\n`x/y.md`\n</PRE>\n',
+    '%% [[x/y]] %%\n', '%%\n[[x/y]]\n%%\n', '$$\n[[x/y]]\n$$\n',
+  ];
+  for (const t of none) assert.equal(rewriteRefs(t, 'x/y.md', to).count, 0, JSON.stringify(t));
+  const ok = ['<pre>\na\n</pre>\n[[x/y]]\n', '%%\nc\n%%\n[[x/y]]\n', '$$\nm\n$$\n`x/y.md`\n', '   [[x/y]]\n'];
+  for (const t of ok) assert.equal(rewriteRefs(t, 'x/y.md', to).count, 1, JSON.stringify(t));
+});
+
+test('[relink/r6-self] region edges: $$ mid-line, a %% pair inside an open comment, a closer that opens another region', () => {
+  const to = '90_Archive/x/y.md';
+  for (const t of ['a $$ [[x/y]] $$\n', 'a $$\n[[x/y]]\n$$\n', '%%\nb %% c %% d\n[[x/y]]\n%%\n', '<pre>\n</pre> <!--\n[[x/y]]\n-->\n']) {
+    assert.equal(rewriteRefs(t, 'x/y.md', to).count, 0, JSON.stringify(t));
+  }
+  assert.equal(rewriteRefs('%%\nc\n%% [[x/y]]\n', 'x/y.md', to).count, 0); // the closing line itself is left alone
+  assert.equal(rewriteRefs('%%\nc\n%%\n[[x/y]]\n', 'x/y.md', to).count, 1);
 });
