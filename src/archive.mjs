@@ -75,38 +75,46 @@ const WIKI = /!?\[\[([^\]\n]+?)\]\]/g;
 function wikiTarget(inner) {
   return inner.split(/[|#^]/)[0].replace(/\\$/, '').trim().replace(/\.md$/i, '').replace(/^\/+/, '');
 }
-const PATH_CHAR = /[\p{L}\p{N}_\-./]/u;
-const NAME_CHAR = /[\p{L}\p{N}_\-]/u;
+const FENCE = /^\s{0,3}(```|~~~)/;
 
 /**
  * Rewrite the references to one note's full vault path from `fromRel` to `toRel` (both .md paths), and nothing else:
  *   - [[wikilinks]] whose target is exactly that path (with or without .md or a leading /): only the target changes,
  *     the alias, heading, block, embed ! and a table's \| stay;
- *   - the .md path written as text (e.g. `10_Knowledge/…/x.md` in the wiki index) when it is not part of a longer
- *     path or name (`x/<path>`, `<path>x`, `<path>.bak`) — so an already archived `90_Archive/<path>` is never doubled.
- * Partial or case-differing paths and markdown links are not touched (they block the move instead). Reversible:
- * rewriteRefs(rewriteRefs(t, a, b).text, b, a) gives t back unless t already spelled b. Returns { text, count }.
+ *   - the .md path written as an inline code span exactly (`` `10_Knowledge/…/x.md` ``, the wiki index's form),
+ *     outside any [[wikilink]] — so `90_Archive/<path>`, `<path> 2.md` or `x/<path>` are never touched.
+ * Fenced code blocks, bare text, URLs, other notes' links and aliases, partial or case-differing paths and markdown
+ * links are not touched (the last three block the move instead). Reversible: rewriteRefs(rewriteRefs(t, a, b).text,
+ * b, a) gives t back unless t already spelled b. Returns { text, count }.
  */
 export function rewriteRefs(text, fromRel, toRel) {
   const a = noExt(fromRel), b = noExt(toRel);
+  const spanFrom = '`' + fromRel + '`', spanTo = '`' + toRel + '`';
   let count = 0;
-  const linked = text.replace(WIKI, (m, inner) => {
-    if (wikiTarget(inner) !== a) return m;
-    const i = inner.indexOf(a); // only blanks and slashes can come before it
-    count++;
-    return m.slice(0, m.indexOf('[[') + 2) + inner.slice(0, i) + b + inner.slice(i + a.length) + ']]';
-  });
-  let out = '', from = 0, k;
-  while ((k = linked.indexOf(fromRel, from)) >= 0) {
-    const prev = k > 0 ? linked[k - 1] : '';
-    const next = linked[k + fromRel.length] || '';
-    const after = linked[k + fromRel.length + 1] || '';
-    if ((prev && PATH_CHAR.test(prev)) || (next && NAME_CHAR.test(next)) || (next === '.' && after && NAME_CHAR.test(after))) {
-      out += linked.slice(from, k + 1); from = k + 1; continue;
+  let fence = null; // the open fence's marker
+  const plain = (seg) => {
+    const parts = seg.split(spanFrom);
+    count += parts.length - 1;
+    return parts.join(spanTo);
+  };
+  const lines = text.split('\n').map((line) => {
+    const f = FENCE.exec(line);
+    if (f) { if (!fence) fence = f[1]; else if (f[1] === fence) fence = null; return line; }
+    if (fence || (!line.includes(a))) return line;
+    let out = '', last = 0;
+    for (const m of line.matchAll(WIKI)) {
+      out += plain(line.slice(last, m.index));
+      const inner = m[1];
+      if (wikiTarget(inner) === a) {
+        const i = inner.indexOf(a); // only blanks and slashes can come before it
+        count++;
+        out += m[0].slice(0, m[0].indexOf('[[') + 2) + inner.slice(0, i) + b + inner.slice(i + a.length) + ']]';
+      } else out += m[0];
+      last = m.index + m[0].length;
     }
-    out += linked.slice(from, k) + toRel; from = k + fromRel.length; count++;
-  }
-  return { text: out + linked.slice(from), count };
+    return out + plain(line.slice(last));
+  });
+  return { text: lines.join('\n'), count };
 }
 const REFDEF = /^\s{0,3}\[[^\]\n]+\]:\s*(.*)$/;
 
@@ -346,7 +354,7 @@ export function recoverAside(vault, now = new Date()) {
  * no second hard link; written to a fresh temp file next to it and renamed over it, only if the note still reads the
  * same as when we read it. Returns the number of references changed (0 = nothing to do, nothing written).
  */
-function rewriteNote(vault, rel, fromRel, toRel) {
+function rewriteNote(vault, rel, fromRel, toRel, entry = null, ledger = null) {
   const parts = String(rel).split('/');
   if (!rel || path.isAbsolute(rel) || parts.some((p) => !p || p === '.' || p === '..') || !/\.md$/i.test(rel)) throw new Error('볼트 안 노트 경로가 아님');
   if (['_attic', ARCHIVE_ROOT].includes(parts[0])) throw new Error(`${parts[0]} 아래 노트는 고치지 않음`);
@@ -361,8 +369,44 @@ function rewriteNote(vault, rel, fromRel, toRel) {
   if (!Buffer.from(text, 'utf8').equals(raw)) throw new Error('UTF-8 이 아닌 노트 — 고치지 않음');
   const r = rewriteRefs(text, fromRel, toRel);
   if (!r.count) return 0;
-  replaceNoteIfUnchanged(abs, raw, r.text, st.mode & 0o777);
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  const journal = entry && ((j) => {
+    if (j) entry.relinkAside = { file: rel, tmp: posix(path.relative(vault, j.tmp)), aside: posix(path.relative(vault, j.aside)), sha256: hash };
+    else delete entry.relinkAside;
+    saveLedger(vault, ledger);
+  });
+  replaceNoteIfUnchanged(abs, raw, r.text, st.mode & 0o777, journal);
   return r.count;
+}
+
+/**
+ * A link rewrite that stopped mid-swap (see vault.mjs replaceNoteIfUnchanged): the original set aside goes back when
+ * the note is missing or the note is still our temp file and the original was edited; an unchanged original next to
+ * a note is dropped. Anything else (an editor's new note AND an edited original) is left for a person.
+ */
+function settleRelinkAside(vault, entry) {
+  const j = entry.relinkAside;
+  const inVault = (rel) => (typeof rel === 'string' && !badRel(vault, rel) ? path.join(vault, rel) : null);
+  const abs = inVault(j.file), aside = inVault(j.aside), tmp = inVault(j.tmp);
+  if (!abs || !aside || !tmp || path.dirname(aside) !== path.dirname(abs) || path.dirname(tmp) !== path.dirname(abs)
+    || !/^\.attic-relink-[0-9a-f]+\.orig$/.test(path.basename(aside)) || !/^\.attic-relink-[0-9a-f]+\.tmp$/.test(path.basename(tmp))) {
+    throw new Error('원장의 링크 고침 기록이 올바르지 않음 — 직접 확인 필요');
+  }
+  const a = statL(aside);
+  if (a) {
+    const n = statL(abs), t = statL(tmp);
+    const ours = n && t && n.ino === t.ino && n.dev === t.dev;
+    const unchanged = sha(aside) === j.sha256;
+    if (!n || (ours && !unchanged)) fs.renameSync(aside, abs);
+    else if (unchanged) fs.unlinkSync(aside);
+    else throw new Error(`링크를 고치다 멈춘 노트의 바뀐 원본이 ${j.aside} 에 남아 있음 — 직접 확인 필요`);
+  }
+  try { fs.unlinkSync(tmp); } catch { /* gone */ }
+  delete entry.relinkAside;
+}
+function badRel(vault, rel) {
+  const parts = rel.split('/');
+  return !rel || path.isAbsolute(rel) || parts.some((p) => !p || p === '.' || p === '..') || ['_attic', ARCHIVE_ROOT].includes(parts[0]) || !!symlinkOnTarget(vault, rel);
 }
 
 /** Rewrite the references for one moved entry (old path -> archive path); records what was done. Returns error texts. */
@@ -371,7 +415,7 @@ function relinkEntry(vault, entry, ledger, now) {
   const errors = [];
   for (const rel of entry.relink || []) {
     if (done.has(rel)) continue;
-    try { done.set(rel, { file: rel, count: rewriteNote(vault, rel, entry.from, entry.to) }); }
+    try { done.set(rel, { file: rel, count: rewriteNote(vault, rel, entry.from, entry.to, entry, ledger) }); }
     catch (e) {
       if (e.code === 'ENOENT') done.set(rel, { file: rel, count: 0, missing: true }); // the note is gone: nothing to fix
       else errors.push(`${rel}: ${e.message}`);
@@ -389,11 +433,27 @@ export function finishRelinks(vault, now = new Date()) {
   const ledger = readArchiveLedger(vault);
   const out = [];
   for (const e of ledger) {
-    if (e.status !== 'moved' || !e.relink?.length || e.relinkedAt) continue;
-    relinkEntry(vault, e, ledger, now);
-    out.push(e);
+    if (e.relinkAside) {
+      try { settleRelinkAside(vault, e); } catch (err) { e.relinkError = err.message; saveLedger(vault, ledger); out.push(e); continue; }
+      saveLedger(vault, ledger);
+    }
+    if (!e.relink?.length) continue;
+    if (e.status === 'moved' && !e.relinkedAt) { relinkEntry(vault, e, ledger, now); out.push(e); }
+    else if (e.status === 'undone' && !e.unrelinkedAt) { unrelinkEntry(vault, e, ledger, now); out.push(e); }
   }
   return out;
+}
+
+/** Undo's half: turn this entry's rewritten references back (every planned note; a crash may have left one unrecorded). */
+function unrelinkEntry(vault, e, ledger, now) {
+  const errs = [];
+  for (const rel of e.relink || []) {
+    try { rewriteNote(vault, rel, e.to, e.from, e, ledger); } catch (err) { if (err.code !== 'ENOENT') errs.push(`${rel}: ${err.message}`); }
+  }
+  if (errs.length) e.unrelinkError = errs.join(' / ');
+  else { delete e.unrelinkError; e.unrelinkedAt = now.toISOString(); }
+  saveLedger(vault, ledger);
+  return errs;
 }
 
 /** Move one planned row (status ready or half). Returns { ok, error?, relinkErrors? }. opts.beforeUnlink: test hook. */
@@ -487,13 +547,9 @@ export function undoArchive(vault, ids, { now = new Date() } = {}) {
     if (sha(fa) !== e.sha256) { fs.unlinkSync(fa); out.refused.push({ proposalId: e.proposalId, from: e.from, reason: '되돌린 파일 해시가 다름' }); continue; }
     fs.unlinkSync(ta);
     e.status = 'undone'; e.undoneAt = now.toISOString();
-    // Links rewritten for this move go back too (every planned note: a crash may have left a rewrite unrecorded).
-    const errs = [];
-    for (const rel of e.relink || []) {
-      try { rewriteNote(vault, rel, e.to, e.from); } catch (err) { if (err.code !== 'ENOENT') errs.push(`${rel}: ${err.message}`); }
-    }
-    if (e.relink?.length) e.unrelinkedAt = now.toISOString();
-    if (errs.length) e.unrelinkError = errs.join(' / ');
+    saveLedger(vault, ledger);
+    // Links rewritten for this move go back too; a failure stays recorded and finishRelinks retries it.
+    if (e.relink?.length) unrelinkEntry(vault, e, ledger, now);
     const p = getProposal(vault, e.proposalId);
     if (p) { p.archiveUndoneAt = now.toISOString(); saveProposal(vault, p); }
     out.restored.push(e);

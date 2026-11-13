@@ -71,16 +71,41 @@ export function copyIntoAttic(vault, rel, srcFile) {
 /** Per-vault random id (created once). Proposal ids derive from it so they cannot collide with another vault's. */
 /**
  * The one write brain-attic makes to a note outside _attic/ (archive relink, src/archive.mjs, which checks the path):
- * replace `abs` with `text` only if it still holds exactly `raw` — via a fresh temp file next to it (wx) renamed over
- * it, so the note is never half-written. Throws if it changed meanwhile (nothing written).
+ * put `text` at `abs` if it still holds exactly `raw`, never losing an editor's save made meanwhile:
+ *   1. write a fresh temp file (wx) next to it;           2. rename the original aside (atomic; journaled first);
+ *   3. link the temp file to the path — no clobber: a file an editor saved there meanwhile wins (ours is dropped);
+ *   4. compare the set-aside original with `raw`: written in place meanwhile -> it goes back over ours.
+ * Throws in those two cases (nothing of ours is left). `journal({ tmp, aside })` is called before step 2 and
+ * `journal(null)` when done, so a crash in between can be settled (archive.mjs settleRelinkAside). hooks: tests only.
  */
-export function replaceNoteIfUnchanged(abs, raw, text, mode = 0o644) {
-  const tmp = path.join(path.dirname(abs), `.attic-relink-${crypto.randomBytes(6).toString('hex')}.tmp`);
+export function replaceNoteIfUnchanged(abs, raw, text, mode = 0o644, journal = null, hooks = {}) {
+  const tag = crypto.randomBytes(6).toString('hex');
+  const tmp = path.join(path.dirname(abs), `.attic-relink-${tag}.tmp`);
+  const aside = path.join(path.dirname(abs), `.attic-relink-${tag}.orig`);
+  const drop = (p) => { try { fs.unlinkSync(p); } catch { /* gone */ } };
   fs.writeFileSync(tmp, text, { flag: 'wx', mode });
-  try {
-    if (!fs.readFileSync(abs).equals(raw)) throw new Error('고치는 사이에 노트가 바뀜 — 다음 실행 때 다시 고침');
-    fs.renameSync(tmp, abs);
-  } catch (e) { try { fs.unlinkSync(tmp); } catch { /* gone */ } throw e; }
+  journal?.({ tmp, aside });
+  try { fs.renameSync(abs, aside); } catch (e) { drop(tmp); journal?.(null); throw e; }
+  hooks.afterAside?.();
+  try { fs.linkSync(tmp, abs); } catch (e) {
+    if (e.code === 'EEXIST') {
+      // An editor saved a new file at the path: it is newer than the original we set aside (drop that if unchanged).
+      if (fs.readFileSync(aside).equals(raw)) drop(aside);
+      drop(tmp); journal?.(null);
+      if (fs.existsSync(aside)) throw new Error(`고치는 사이에 노트가 새로 저장됨 — 새 노트는 그대로 두고, 바뀐 원본은 ${path.basename(aside)} 에 남김`);
+      throw new Error('고치는 사이에 노트가 새로 저장됨 — 새 노트는 그대로 두고 다음 실행 때 다시 고침');
+    }
+    try { fs.renameSync(aside, abs); } catch { /* left aside: settled from the journal */ }
+    drop(tmp); journal?.(null);
+    throw e;
+  }
+  hooks.afterLink?.(aside);
+  if (!fs.readFileSync(aside).equals(raw)) {
+    fs.renameSync(aside, abs); // their in-place edit goes back over ours
+    drop(tmp); journal?.(null);
+    throw new Error('고치는 사이에 노트가 바뀜 — 바뀐 내용을 그대로 두고 다음 실행 때 다시 고침');
+  }
+  drop(aside); drop(tmp); journal?.(null);
 }
 
 export function getInstanceId(vault) {

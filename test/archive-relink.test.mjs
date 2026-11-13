@@ -6,8 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { testCtx } from './helpers.mjs';
-import { ensureSkeleton } from '../src/vault.mjs';
+import { ensureSkeleton, replaceNoteIfUnchanged } from '../src/vault.mjs';
 import { createProposal, decide, getProposal } from '../src/proposals.mjs';
 import { finishRelinks, planArchive, readArchiveLedger, rewriteRefs, runArchive, undoArchive } from '../src/archive.mjs';
 import { apply } from '../src/apply.mjs';
@@ -184,4 +185,83 @@ test('[relink/self-review] the hourly apply finishes a pending relink even when 
   fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify(led));
   await apply(ctx, { now: LATER });
   assert.equal(read(vault, '_system/entities/넥덕.md'), once);
+});
+
+// ---------------------------------------------------------------- Codex round 1 (P1 ×2, P2 undo retry)
+test('[relink/r1] only exact references change: not another note named <path> copy, a URL, code blocks, aliases or bare text', () => {
+  const text = [
+    `[[${F} copy]] · [[${P} copy|x]]`,
+    `https://example.com/view?file=${F}`,
+    `[[다른 노트|${F}]] · [[다른 노트|\`${F}\`]]`,
+    `그냥 적은 ${F} 경로`,
+    '```', `[[${P}]] \`${F}\``, '```',
+    '~~~md', `[[${P}|코드]]`, '~~~',
+    `진짜: [[${P}|t]] \`${F}\``, '',
+  ].join('\n');
+  const r = rewriteRefs(text, F, `90_Archive/${F}`);
+  assert.equal(r.count, 2);
+  assert.equal(r.text, text.replace(`진짜: [[${P}|t]] \`${F}\``, `진짜: [[${A}|t]] \`90_Archive/${F}\``));
+});
+
+test('[relink/r1] an editor saving while we swap never loses its text (new file at the path, or an in-place write)', () => {
+  const dir = fs.mkdtempSync(path.join(testCtx().vault, 'race-'));
+  const abs = path.join(dir, 'n.md');
+  fs.writeFileSync(abs, 'old\n');
+  const raw = fs.readFileSync(abs);
+  // 1) a new file appears at the path after we set the original aside: kept, ours dropped
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw, 'ours\n', 0o644, null, { afterAside: () => fs.writeFileSync(abs, 'NEW USER TEXT\n') }), /새로 저장/);
+  assert.equal(fs.readFileSync(abs, 'utf8'), 'NEW USER TEXT\n');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['n.md']);
+  // 2) the original inode is written in place after we read it: that text is put back over ours
+  fs.writeFileSync(abs, 'old\n');
+  const raw2 = fs.readFileSync(abs);
+  assert.throws(() => replaceNoteIfUnchanged(abs, raw2, 'ours\n', 0o644, null, { afterLink: (aside) => fs.writeFileSync(aside, 'EDITED IN PLACE\n') }), /바뀜/);
+  assert.equal(fs.readFileSync(abs, 'utf8'), 'EDITED IN PLACE\n');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['n.md']);
+  // 3) nothing happens meanwhile: ours, no leftovers
+  replaceNoteIfUnchanged(abs, fs.readFileSync(abs), 'ours\n');
+  assert.equal(fs.readFileSync(abs, 'utf8'), 'ours\n');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['n.md']);
+});
+
+test('[relink/r1] a crash mid-swap (original set aside, note missing) is put back by the next run, then relinked', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const once = read(vault, '_system/entities/넥덕.md');
+  // simulate: relink not finished, the entity page sits aside under a temp name and is missing at its path
+  const led = readArchiveLedger(vault);
+  const e = led.find((x) => x.proposalId === p.id);
+  delete e.relinkedAt; delete e.relinked;
+  fs.writeFileSync(path.join(vault, '_system/entities/.attic-relink-abc.orig'), ENTITY);
+  fs.unlinkSync(path.join(vault, '_system/entities/넥덕.md'));
+  e.relinkAside = { file: '_system/entities/넥덕.md', aside: '_system/entities/.attic-relink-abc.orig', tmp: '_system/entities/.attic-relink-abc.tmp', sha256: crypto.createHash('sha256').update(ENTITY).digest('hex') };
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify(led));
+  finishRelinks(vault, LATER);
+  assert.equal(read(vault, '_system/entities/넥덕.md'), once);
+  assert.deepEqual(fs.readdirSync(path.join(vault, '_system/entities')), ['넥덕.md']);
+  assert.equal(readArchiveLedger(vault).find((x) => x.proposalId === p.id).relinkAside, undefined);
+});
+
+test('[relink/r1] an undo whose link restore failed is retried by the next run', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const ent = path.join(vault, '_system/entities/넥덕.md');
+  fs.linkSync(ent, path.join(vault, '_system/entities/extra-name.txt')); // makes the rewrite refuse (second hard link)
+  const u = undoArchive(vault, [p.id], { now: LATER });
+  assert.equal(u.restored.length, 1);
+  assert.ok(readArchiveLedger(vault).find((x) => x.proposalId === p.id).unrelinkError);
+  fs.unlinkSync(path.join(vault, '_system/entities/extra-name.txt'));
+  finishRelinks(vault, LATER);
+  assert.equal(read(vault, '_system/entities/넥덕.md'), ENTITY);
+  const e = readArchiveLedger(vault).find((x) => x.proposalId === p.id);
+  assert.ok(e.unrelinkedAt);
+  assert.equal(e.unrelinkError, undefined);
 });
