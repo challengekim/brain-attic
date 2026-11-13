@@ -393,7 +393,8 @@ test('[relink/r3] our file taken back is never unlinked: a late write through a 
   assert.deepEqual(leftovers(dir), []);
 });
 
-test('[relink/r3] recovery keeps a temp file holding the only copy of an edit, and the prune turns it into a conflict note', async () => {
+test('[relink/r3] recovery keeps a temp file holding the only copy of an edit, and the prune turns it into a conflict note', async (t) => {
+  if (!hasLsof) return t.skip('lsof not available');
   const ctx = setup();
   const { vault } = ctx;
   note(vault, F);
@@ -424,7 +425,8 @@ test('[relink/r3] recovery keeps a temp file holding the only copy of an edit, a
   assert.equal(readArchiveLedger(vault).find((x) => x.proposalId === p.id).relinkKept, undefined);
 });
 
-test('[relink/r3] kept copies: dropped after the grace period only when unchanged; a changed one becomes a conflict note', async () => {
+test('[relink/r3] kept copies: dropped after the grace period only when unchanged; a changed one becomes a conflict note', async (t) => {
+  if (!hasLsof) return t.skip('lsof not available');
   const ctx = setup();
   const { vault } = ctx;
   note(vault, F);
@@ -493,4 +495,36 @@ test('[relink/r3-self] a batch never journals a swap on an entry still holding a
   const after = readArchiveLedger(vault);
   assert.deepEqual(after.find((x) => x.proposalId === first.proposalId).relinkAside, stuck);
   assert.equal(read(vault, 'hub.md'), `[[${A}]] [[90_Archive/${G.replace(/\.md$/, '')}]]\n`);
+});
+
+// ---------------------------------------------------------------- Codex round 4 (P1 ×2)
+const hasLsof = ['/usr/sbin/lsof', '/usr/bin/lsof', '/bin/lsof'].some((p) => fs.existsSync(p));
+
+test('[relink/r4] only a line that can interrupt a paragraph ends an open run (not «2.», not an empty item)', () => {
+  const to = '90_Archive/x/y.md';
+  assert.equal(rewriteRefs('example `` start\n2. [[x/y]]\nend ``\n', 'x/y.md', to).count, 0);
+  assert.equal(rewriteRefs('example `` start\n2) `x/y.md`\nend ``\n', 'x/y.md', to).count, 0);
+  assert.equal(rewriteRefs('example `` start\n-\n[[x/y]] ``\n', 'x/y.md', to).count, 0);
+  assert.equal(rewriteRefs('example `` start\n1. [[x/y]]\n', 'x/y.md', to).count, 1); // «1.» interrupts: a new block
+  assert.equal(rewriteRefs('example `` start\n- [[x/y]]\n', 'x/y.md', to).count, 1);
+  assert.equal(rewriteRefs('example `` start\n## [[x/y]]\n', 'x/y.md', to).count, 1);
+});
+
+test('[relink/r4] a kept copy any process still holds open is never removed, even after the grace period', async (t) => {
+  if (!hasLsof) return t.skip('lsof not available');
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  const p = approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  const k = readArchiveLedger(vault).find((x) => x.proposalId === p.id).relinkKept[0];
+  const fd = fs.openSync(path.join(vault, k.kept), 'r+'); // an editor still holding the old file
+  finishRelinks(vault, new Date(+LATER + 60 * MIN));
+  assert.equal(keptFiles(vault).length, 1);
+  fs.writeSync(fd, 'LATE ', 0); fs.closeSync(fd);
+  finishRelinks(vault, new Date(+LATER + 61 * MIN));
+  assert.deepEqual(keptFiles(vault), []);
+  const dir = path.join(vault, '_system/entities');
+  assert.ok(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8').startsWith('LATE '));
 });

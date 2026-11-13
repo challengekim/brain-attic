@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { requireVault } from './config.mjs';
 import { atticPath, atticWritePath, ensureSkeleton, keepAsConflict, placeNoClobber, replaceNoteIfUnchanged, takeBackIfOurs, writeAtticJson } from './vault.mjs';
 import { readJson } from './util.mjs';
@@ -77,7 +78,9 @@ function wikiTarget(inner) {
   return inner.split(/[|#^]/)[0].replace(/\\$/, '').trim().replace(/\.md$/i, '').replace(/^\/+/, '');
 }
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/;
-const BLOCK_START = /^ {0,3}([-*+]|\d{1,9}[.)])(\s|$)|^ {0,3}#{1,6}(\s|$)/; // list item, heading (a quote line may continue a paragraph)
+// Lines that can interrupt a paragraph (CommonMark), so a code span cannot run on into them: an ATX heading, a bullet
+// with content, an ordered item numbered 1 with content. Not «2.», an empty item or a quote line (they may continue).
+const BLOCK_START = /^ {0,3}#{1,6}(\s|$)|^ {0,3}[-*+][ \t]+\S|^ {0,3}1[.)][ \t]+\S/;
 
 /**
  * Inline code spans of one line (CommonMark: a backtick run closes at the next run of the same length).
@@ -438,8 +441,8 @@ function rewriteNote(vault, rel, pairs, holder, ledger, now) {
 /**
  * Files that were once at a note's path are never unlinked right away (a writer that opened one earlier may still
  * write to it): they move to _attic/archive/relink-kept/ with the content we checked, recorded on `holder` first.
- * pruneKept drops them after KEEP_MS only if another name still holds the file or the content is still that;
- * otherwise the file becomes a visible conflict note next to the note.
+ * pruneKept, after KEEP_MS: drops one another name still links; keeps one any process holds open (or when lsof cannot
+ * tell); otherwise drops it if the content is still that, else makes it a visible conflict note next to the note.
  */
 const KEPT_DIR = 'archive/relink-kept';
 const KEEP_MS = 10 * 60 * 1000;
@@ -453,6 +456,17 @@ function keeper(vault, holder, ledger, now, rel) {
     fs.renameSync(file, dest);
   };
 }
+/**
+ * Does any process still hold `abs` open? true / false, or null when lsof cannot tell. A kept file has a random name
+ * under _attic that no editor opens anew, so only a handle opened before can write to it: none now means none later.
+ */
+function heldOpen(abs) {
+  const r = spawnSync('lsof', ['-t', '--', abs], { encoding: 'utf8', timeout: 30000 });
+  if (r.error || r.signal) return null;
+  if (r.status === 0 && r.stdout.trim()) return true;
+  if (r.status === 1 && !r.stdout.trim()) return false;
+  return null;
+}
 function pruneKept(vault, ledger, now) {
   const notes = [];
   for (const e of ledger) {
@@ -465,7 +479,9 @@ function pruneKept(vault, ledger, now) {
         const abs = atticWritePath(vault, k.kept.slice('_attic/'.length));
         const st = statL(abs);
         if (!st) continue; // never got there, or already handled
-        if (st.nlink > 1 || (k.sha256 && sha(abs) === k.sha256)) { fs.unlinkSync(abs); continue; } // provably not the last copy of anything new
+        if (st.nlink > 1) { fs.unlinkSync(abs); continue; } // another name keeps these bytes; that name is judged on its own
+        if (heldOpen(abs) !== false) { keep.push(k); continue; } // a writer may still write to it (or we cannot tell)
+        if (k.sha256 && sha(abs) === k.sha256) { fs.unlinkSync(abs); continue; } // no writer left: the content is final
         if (badRel(vault, k.file)) throw new Error('원장의 노트 경로가 올바르지 않음');
         notes.push(keepAsConflict(abs, path.join(vault, k.file)));
       } catch (err) { k.error = err.message; keep.push(k); }
