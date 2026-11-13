@@ -594,3 +594,19 @@ test('[relink/r7] a skipped line never ends (and may start) an open code span; a
   ]) assert.equal(rewriteRefs(t, 'x/y.md', to).count, 0, JSON.stringify(t));
   assert.equal(rewriteRefs('``` <!--\na\n```\n[[x/y]]\n', 'x/y.md', to).count, 1); // the fence closes; no region was opened
 });
+
+// ---------------------------------------------------------------- 2026-11-13 follow-up: launchd PATH has no /usr/sbin
+test('[relink/path] kept copies are pruned even when PATH has no /usr/sbin (the launchd tick PATH)', async (t) => {
+  if (!hasLsof) return t.skip('lsof not available');
+  const ctx = setup();
+  const { vault } = ctx;
+  note(vault, F);
+  note(vault, '_system/entities/넥덕.md', ENTITY);
+  approvedDrop(vault, F);
+  await runArchive(ctx, { now: LATER });
+  assert.equal(keptFiles(vault).length, 1);
+  const saved = process.env.PATH;
+  process.env.PATH = '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin'; // what launchd gives `attic tick`
+  try { finishRelinks(vault, new Date(+LATER + 11 * MIN)); } finally { process.env.PATH = saved; }
+  assert.deepEqual(keptFiles(vault), []);
+});

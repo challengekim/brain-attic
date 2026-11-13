@@ -501,8 +501,10 @@ function keeper(vault, holder, ledger, now, rel) {
  * Does any process still hold `abs` open? true / false, or null when lsof cannot tell. A kept file has a random name
  * under _attic that no editor opens anew, so only a handle opened before can write to it: none now means none later.
  */
+// launchd gives `attic tick` a PATH without /usr/sbin, where macOS keeps lsof: look in the standard places first.
+const LSOF = ['/usr/sbin/lsof', '/usr/bin/lsof', '/bin/lsof'].find((p) => fs.existsSync(p)) || 'lsof';
 function heldOpen(abs) {
-  const r = spawnSync('lsof', ['-t', '--', abs], { encoding: 'utf8', timeout: 30000 });
+  const r = spawnSync(LSOF, ['-t', '--', abs], { encoding: 'utf8', timeout: 30000 });
   if (r.error || r.signal) return null;
   if (r.status === 0 && r.stdout.trim()) return true;
   if (r.status === 1 && !r.stdout.trim()) return false;
