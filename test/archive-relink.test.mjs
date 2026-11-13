@@ -528,3 +528,14 @@ test('[relink/r4] a kept copy any process still holds open is never removed, eve
   const dir = path.join(vault, '_system/entities');
   assert.ok(fs.readFileSync(path.join(dir, conflicts(dir)[0]), 'utf8').startsWith('LATE '));
 });
+
+test('[relink/r4-self] an indented code block (4 spaces or a tab after a blank line) is code: untouched, and the plan blocks', () => {
+  const to = '90_Archive/x/y.md';
+  assert.equal(rewriteRefs('a\n\n    [[x/y]] `x/y.md`\n\tmore [[x/y]]\n', 'x/y.md', to).count, 0);
+  assert.equal(rewriteRefs('a\n    [[x/y]]\n', 'x/y.md', to).count, 1); // after a paragraph line: a continuation, not code
+  assert.equal(rewriteRefs('a\n\n    code\nback [[x/y]]\n', 'x/y.md', to).count, 1);
+  const { vault } = setup();
+  note(vault, 'x/y.md');
+  note(vault, 'hub.md', '\n    [[x/y]]\n');
+  assert.equal(planArchive(vault, [approvedDrop(vault, 'x/y.md')])[0].status, 'blocked');
+});

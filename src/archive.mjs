@@ -106,7 +106,7 @@ function codeSpans(line, wikis = []) {
  *   - [[wikilinks]] whose target is exactly that path (with or without .md or a leading /): only the target changes,
  *     the alias, heading, block, embed ! and a table's \| stay;
  *   - an inline code span that is exactly that .md path (`` `10_Knowledge/…/x.md` ``, the wiki index's form).
- * Untouched: fenced code blocks (closed only by the same char, at least as long), other code spans (and wikilinks
+ * Untouched: fenced code blocks (closed only by the same char, at least as long), indented code blocks, other code spans (and wikilinks
  * inside them), anything a backtick run left open earlier in the same block may still be spanning (a `path` there stays
  * a stale mention; an exact link there blocks the move, see linkIndex), code spans inside a wikilink, bare text, URLs, other notes' links and aliases. Partial or
  * case-differing paths and markdown links block the move instead. Reversible: rewriteRefs(rewriteRefs(t, a, b).text,
@@ -117,7 +117,13 @@ export function rewriteRefs(text, fromRel, toRel) {
   let count = 0;
   let fence = null; // the open fence: { ch, len }
   let spanOpen = false; // an unclosed backtick run earlier in this paragraph: code spans here are not trusted
+  let prevBlank = true, indented = false; // an indented code block: 4 spaces or a tab after a blank line (or another)
   const lines = text.split('\n').map((line) => {
+    const blank = !line.trim();
+    const ind = !blank && /^( {4}|\t| {0,3}\t)/.test(line);
+    indented = fence ? false : blank ? indented : ind && (prevBlank || indented);
+    prevBlank = blank;
+    if (indented && !blank) return line;
     const f = FENCE_OPEN.exec(line);
     if (fence) {
       if (f && f[1][0] === fence.ch && f[1].length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) fence = null;
