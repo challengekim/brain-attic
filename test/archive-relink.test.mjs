@@ -473,3 +473,24 @@ test('[relink/r3] notes moved in one run are relinked in ONE swap per referencin
   assert.equal(read(vault, '_system/wiki/index.md'), idx);
   assert.equal(readArchiveLedger(vault).flatMap((x) => x.relinkKept || []).length, 2);
 });
+
+test('[relink/r3-self] a batch never journals a swap on an entry still holding an unsettled one', async () => {
+  const ctx = setup();
+  const { vault } = ctx;
+  const G = '10_Knowledge/References/RSS/Articles/두번째.md';
+  note(vault, F); note(vault, G);
+  note(vault, 'hub.md', `[[${P}]] [[${G.replace(/\.md$/, '')}]]\n`);
+  const ps = [approvedDrop(vault, F), approvedDrop(vault, G)];
+  await runArchive(ctx, { now: LATER });
+  fs.writeFileSync(path.join(vault, 'hub.md'), `[[${P}]] [[${G.replace(/\.md$/, '')}]]\n`); // as if not relinked yet
+  const led = readArchiveLedger(vault);
+  const stuck = { file: 'other.md', aside: 'x/.attic-relink-1.orig', tmp: 'other/.attic-relink-1.tmp', sha256: 'x' }; // cannot settle
+  for (const p of ps) { const e = led.find((x) => x.proposalId === p.id); delete e.relinkedAt; delete e.relinked; }
+  const first = led.find((x) => ps.some((p) => p.id === x.proposalId)); // the batch's first entry
+  first.relinkAside = stuck;
+  fs.writeFileSync(path.join(vault, '_attic/archive/ledger.json'), JSON.stringify(led));
+  finishRelinks(vault, LATER);
+  const after = readArchiveLedger(vault);
+  assert.deepEqual(after.find((x) => x.proposalId === first.proposalId).relinkAside, stuck);
+  assert.equal(read(vault, 'hub.md'), `[[${A}]] [[90_Archive/${G.replace(/\.md$/, '')}]]\n`);
+});

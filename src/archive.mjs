@@ -514,7 +514,6 @@ function badRel(vault, rel) {
  * (relinkError / unrelinkError) and retried by the next run.
  */
 function relinkBatch(vault, ledger, entries, now, back = false) {
-  const busy = new Set(ledger.filter((e) => e.relinkAside).map((e) => e.relinkAside.file)); // an unsettled swap: wait
   const byNote = new Map();
   for (const e of entries) {
     const done = new Set(back ? [] : (e.relinked || []).map((x) => x.file));
@@ -523,9 +522,11 @@ function relinkBatch(vault, ledger, entries, now, back = false) {
   const errs = new Map();
   const fail = (e, msg) => errs.set(e, [...(errs.get(e) || []), msg]);
   for (const [rel, es] of byNote) {
-    if (busy.has(rel)) { for (const e of es) fail(e, `${rel}: 이전 링크 고침이 아직 정리되지 않음`); continue; }
+    // An unsettled swap of this note waits for finishRelinks; the journal goes on an entry not holding another one.
+    const holder = es.find((e) => !e.relinkAside);
+    if (!holder || ledger.some((e) => e.relinkAside?.file === rel)) { for (const e of es) fail(e, `${rel}: 이전 링크 고침이 아직 정리되지 않음`); continue; }
     let counts;
-    try { counts = rewriteNote(vault, rel, es.map((e) => (back ? [e.to, e.from] : [e.from, e.to])), es[0], ledger, now); }
+    try { counts = rewriteNote(vault, rel, es.map((e) => (back ? [e.to, e.from] : [e.from, e.to])), holder, ledger, now); }
     catch (err) {
       if (err.code === 'ENOENT') counts = null; // the note is gone: nothing to fix
       else { for (const e of es) fail(e, `${rel}: ${err.message}`); continue; }
