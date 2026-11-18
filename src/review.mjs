@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atticPath, ensureSkeleton, listRecentMd, writeAttic } from './vault.mjs';
 import { isoWeek, readJson } from './util.mjs';
-import { triage, renderRatioTable, TRIAGE_SCHEMA, triageInputKey, tryRank } from './triage.mjs';
+import { triage, renderRatioTable, TRIAGE_SCHEMA, triageInputKey, tryRank, userJudged } from './triage.mjs';
 import { audit, isSkippedDir } from './audit.mjs';
 import { recentEvents } from './radar.mjs';
 import { createProposal, desiredOp, expireStale, getProposal, isItemProposal, itemKey, listProposals, OP_CLASS, proposalId, saveProposal, withdraw } from './proposals.mjs';
@@ -213,10 +213,10 @@ export function renderSheet({ vault, week, tri, aud, events, descriptors, dryRun
     L.push('', `그 밖의 후보 ${tries.length - SHEET_TRY_DETAIL}건 (급하지 않음 — 카드로 보내지 않음):`);
     for (const r of tries.slice(SHEET_TRY_DETAIL)) L.push(`- ${linkOf(r)} — ${r.project}: ${r.next}`);
   }
-  // Notes the user saved with a judgement of their own that ended up a/d: show why they are not being taken in.
-  const skipped = tri.items.filter((i) => i.relevance && ['a', 'd'].includes(i.class)).slice(0, SHEET_SKIP_MAX);
+  // Notes the user saved with a judgement of their own (not a save tool's AI guess) that ended up a/d: show why they are not being taken in.
+  const skipped = tri.items.filter((i) => userJudged(i) && ['a', 'd'].includes(i.class)).slice(0, SHEET_SKIP_MAX);
   if (skipped.length) {
-    L.push('', '### 들이지 않기로 한 것 (저장할 때 판단을 적어 둔 노트 중)', '');
+    L.push('', '### 들이지 않기로 한 것 (저장할 때 직접 판단을 적어 둔 노트 중)', '');
     for (const r of skipped) L.push(`- ${linkOf(r)} — ${r.class === 'd' ? '버림' : '인지만'}: ${r.reason}`);
   }
   L.push('', '## 1. 이번 주 레이더', '');

@@ -115,7 +115,7 @@ test('review re-run: a learn card whose item became try is withdrawn and a try c
 
 test('renderSheet lists saved notes judged a/d under «들이지 않기로 한 것» with the reason', () => {
   const tri = { week: 'W', counts: { a: 1, b: 0, c: 0, d: 0, unclassified: 0 }, usedMinutes: 0, weeklyMinutes: null, errors: [], items: [
-    { id: 'i1', title: 'Agency Agents', file: 'Refs/a.md', class: 'a', reason: '이미 자체 에이전트 체계가 있어 들일 이유가 약함', relevance: '가치가 낮다' },
+    { id: 'i1', title: 'Agency Agents', file: 'Refs/a.md', class: 'a', reason: '이미 자체 에이전트 체계가 있어 들일 이유가 약함', relevance: '가치가 낮다', relevanceBy: 'user' },
   ] };
   const sheet = renderSheet({ vault: '/v', week: 'W', tri, aud, events: [], descriptors: [], dryRun: true, nowIso: 'now' });
   assert.match(sheet, /들이지 않기로 한 것/);
@@ -295,7 +295,7 @@ test('try cap: two or three a week (owner decision 2026-11-03), and the card, sh
 test('try ranking: priority first, then notes saved with a judgement, then usage, then shorter; the cap keeps the top', () => {
   const items = [
     tryItem('LOW', { priority: 3, minutes: 5 }),
-    tryItem('SAVED', { priority: 2, relevance: '내 판단' }),
+    tryItem('SAVED', { priority: 2, relevance: '내 판단', relevanceBy: 'user' }),
     tryItem('MID', { priority: 2 }),
     tryItem('TOP', { priority: 1, minutes: 90 }),
     ...Array.from({ length: MAX_TRY }, (_, n) => tryItem(`FILL${n}`, { priority: 3 })),

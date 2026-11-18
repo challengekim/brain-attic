@@ -18,7 +18,7 @@ export const DEFAULT_RATIOS = { a: 0.30, b: 0.45, c: 0.05, d: 0.20 };
 export const SHEET_LIST_MAX = 15;
 export const CLASSES = ['a', 'b', 'c', 'd', 'unclassified'];
 /** Bump when the triage result shape changes: an older saved result is then re-classified instead of reused. */
-export const TRIAGE_SCHEMA = 3; // 3: try needs `pain` (the project's sore problem it addresses)
+export const TRIAGE_SCHEMA = 4; // 3: try needs `pain` (the project's sore problem it addresses). 4: relevance carries its author (relevanceBy)
 export const NEXT_MAX = 160;
 
 /**
@@ -26,7 +26,7 @@ export const NEXT_MAX = 160;
  * then knowledge already used in several projects, then the shorter one.
  */
 export function tryRank(x, y) {
-  return (y.focus ? 1 : 0) - (x.focus ? 1 : 0) || (x.priority || 3) - (y.priority || 3) || (y.relevance ? 1 : 0) - (x.relevance ? 1 : 0)
+  return (y.focus ? 1 : 0) - (x.focus ? 1 : 0) || (x.priority || 3) - (y.priority || 3) || (userJudged(y) ? 1 : 0) - (userJudged(x) ? 1 : 0)
     || (y.usage?.projects || 0) - (x.usage?.projects || 0) || (x.minutes || 0) - (y.minutes || 0);
 }
 
@@ -47,12 +47,52 @@ export function normalizeProject(raw, projects) {
   return null;
 }
 
-/** What the user wrote about a saved note when saving it (frontmatter my_relevance / applicable_when). */
+/** The «why it matters to me» line written when a note was saved (frontmatter my_relevance / applicable_when). Who wrote it: relevanceByOf. */
 export function relevanceOf(data) {
   const parts = [];
   if (data.my_relevance) parts.push(String(data.my_relevance));
   if (data.applicable_when) parts.push(`적용 시점: ${data.applicable_when}`);
   return parts.length ? truncate(parts.join(' / ').replace(/\s+/g, ' ').trim(), 300) : '';
+}
+
+export const RELEVANCE_AUTHORS = ['user', 'ai'];
+
+/**
+ * Who wrote a note's relevance: the frontmatter marker `relevance_by: user|ai` when present, else the vault's default
+ * (config triage.relevanceBy, "ai" unless set). Save tools usually have an AI write my_relevance, so an unmarked line is
+ * treated as an AI guess, never as the owner's judgement (tell AI-written evidence from the original; prefer the original).
+ */
+export function relevanceByOf(data, fallback = 'ai') {
+  return authorOf(data?.relevance_by) || fallback;
+}
+
+/** 'user' | 'ai' from a string marker (any case); anything else (arrays, numbers, unknown words) -> null. */
+function authorOf(raw) {
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim().toLowerCase();
+  return RELEVANCE_AUTHORS.includes(v) ? v : null;
+}
+
+/**
+ * The memo the owner typed into `attic save <URL> <memo>` (frontmatter source "attic save", an http(s) url and a
+ * non-empty string summary), else ''. Recognised by the note itself, so a note moved into an included folder keeps it.
+ * A memo without a link is the content itself, not a judgement about something.
+ */
+export function savedMemoOf(data) {
+  if (data?.source !== 'attic save' || typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url.trim())) return '';
+  if (typeof data.summary !== 'string') return '';
+  const memo = data.summary.replace(/\s+/g, ' ').trim();
+  return memo ? truncate(memo, 300) : '';
+}
+
+/** The vault's default author for unmarked relevance (config triage.relevanceBy). */
+export function defaultRelevanceBy(config) {
+  return authorOf(config?.triage?.relevanceBy) || 'ai';
+}
+
+/** True only for relevance the owner wrote. Results saved before authors were recorded have none and do not count. */
+export function userJudged(it) {
+  return Boolean(it && it.relevance && it.relevanceBy === 'user');
 }
 
 /** Vault-relative path prefixes the user excluded (auto-generated logs, digests...). */
@@ -62,13 +102,13 @@ function excludedPrefixes(ctx) {
 }
 
 /**
- * Fingerprint of everything outside the notes that changes the classification (exclusions, project list, and the
+ * Fingerprint of everything outside the notes that changes the classification (exclusions, project list, who wrote unmarked relevance, and the
  * feedback guide: approved rules, the owner's recent answers, the system context).
  */
 export function triageInputKey(ctx, guide = guideFor(ctx)) {
   let projects = '';
   try { projects = fs.readFileSync(projectsFileOf(ctx), 'utf8'); } catch { /* none */ }
-  return sha256(JSON.stringify({ exclude: [...excludedPrefixes(ctx)].sort(), projects, guide: guide.key })).slice(0, 12);
+  return sha256(JSON.stringify({ exclude: [...excludedPrefixes(ctx)].sort(), projects, guide: guide.key, relevanceBy: defaultRelevanceBy(ctx.config) })).slice(0, 12);
 }
 
 export function gatherItems(ctx, week, now = new Date()) {
@@ -81,6 +121,7 @@ export function gatherItems(ctx, week, now = new Date()) {
   const sinceMs = isCurrent ? now.getTime() - 7 * 86400000 : start.getTime();
   const untilMs = isCurrent ? Infinity : end.getTime();
   const excluded = excludedPrefixes(ctx);
+  const relevanceDefault = defaultRelevanceBy(ctx.config);
   const readNotes = (dir, source) => {
     for (const { file } of listRecentMd(dir, { sinceMs, untilMs })) {
       const relFile = path.relative(vault, file);
@@ -88,11 +129,19 @@ export function gatherItems(ctx, week, now = new Date()) {
       let text; try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
       const { data, body } = parseFrontmatter(text);
       const title = data.title || path.basename(file, '.md');
-      const relevance = relevanceOf(data);
+      let relevance = relevanceOf(data);
+      let relevanceBy = relevance ? relevanceByOf(data, relevanceDefault) : null;
+      // `attic save <URL> <memo>`: the memo is the owner's own reason for keeping the link. It wins over a relevance
+      // line that is not marked as the owner's (e.g. one a tool added later).
+      const memo = savedMemoOf(data);
+      if (memo && relevanceBy !== 'user') {
+        relevance = memo;
+        relevanceBy = 'user'; // typed by the owner by definition; a relevance_by marker describes my_relevance, not the memo
+      }
       items.push({
         title: String(title), url: data.url ? String(data.url) : (data.source && /^https?:\/\//.test(String(data.source)) ? String(data.source) : ''), source,
         summary: String(data.summary || data.description || body.replace(/\s+/g, ' ').trim().slice(0, 300)),
-        ...(relevance ? { relevance } : {}),
+        ...(relevance ? { relevance, relevanceBy } : {}),
         tags: Array.isArray(data.tags) ? data.tags : (data.tags ? [String(data.tags)] : []),
         date: dateStr(new Date(fs.statSync(file).mtimeMs)), file: relFile,
       });
@@ -156,7 +205,7 @@ export function buildPrompt(batch, projects, ratios, usage, guide = null) {
   const list = batch.map((it) => {
     const u = usage?.get(it.id);
     return JSON.stringify({ id: it.id, title: truncate(it.title, 120), url: it.url, summary: truncate(it.summary, 240), tags: it.tags || [],
-      ...(it.relevance ? { relevance: it.relevance } : {}),
+      ...(it.relevance ? { relevance: it.relevance, relevance_by: it.relevanceBy === 'user' ? 'user' : 'ai' } : {}),
       ...(u && (u.backlinks || u.projects) ? { usage: { backlinks: u.backlinks, projects: u.projects } } : {}) });
   }).join('\n');
   return [
@@ -164,7 +213,7 @@ export function buildPrompt(batch, projects, ratios, usage, guide = null) {
     '- a: 가볍게 읽고 인지만 한다. 존재를 아는 것만으로 쓸모가 있다.',
     '- b: 인지가 필요 없다. 내 시스템(스킬·설정·모델 선택·자동화)에 구체적으로 바꿀 것이 있어서 시스템이 반영하면 된다. reason 에 «무엇을 어떻게 바꾸는지» 를 적는다. 바꿀 것이 없으면(자동 생성 기록, "따로 할 일 없음") b 가 아니라 a 또는 d 다.',
     '- c: 시간을 들일 것. minutes(예상 소요 분, 정수)를 반드시 적고, action 을 고른다:',
-    '    - action "try": 내 프로젝트 하나에서 작게 시험해 볼 도구·방법·기법. project 를 반드시 적고, pain(그 프로젝트에서 지금 아픈 문제 — 막힌 곳·반복되는 실패·비용 — 가 무엇이고 이 항목이 그걸 어떻게 푸는지 한 문장. 프로젝트 목록이나 relevance 에 적힌 사실에 근거한다), next(그 프로젝트에서 무엇을 어디까지 작게 해 볼지 한 문장 — 되돌리기 쉬운 범위로)와 check(무엇을 재거나 보면 됐다/안 됐다를 판정하는지 한 문장)를 적는다. 넷 중 하나라도 못 적겠으면 try 가 아니다.',
+    '    - action "try": 내 프로젝트 하나에서 작게 시험해 볼 도구·방법·기법. project 를 반드시 적고, pain(그 프로젝트에서 지금 아픈 문제 — 막힌 곳·반복되는 실패·비용 — 가 무엇이고 이 항목이 그걸 어떻게 푸는지 한 문장. 프로젝트 목록이나 사용자가 쓴 relevance(relevance_by "user")에 적힌 사실에 근거한다. AI 가 붙인 relevance 만으로는 pain 이 아니다), next(그 프로젝트에서 무엇을 어디까지 작게 해 볼지 한 문장 — 되돌리기 쉬운 범위로)와 check(무엇을 재거나 보면 됐다/안 됐다를 판정하는지 한 문장)를 적는다. 넷 중 하나라도 못 적겠으면 try 가 아니다.',
     '    - pain 은 근거다: «좋아 보인다», «써 보면 도움이 될 것» 처럼 그 프로젝트의 구체적인 문제를 짚지 못하면 pain 이 아니다 — 그런 항목은 learn 이나 a 로 둔다. try 는 한 주에 두세 건만 카드가 된다.',
     '    - try 에는 priority 도 적는다: 1 = 이번 주에 가장 먼저 할 것(전체에서 1~2개뿐), 2 = 이번 주에 할 만함, 3 = 해 볼 만하지만 급하지 않음. 대부분은 3 이다. 지금 프로젝트의 막힌 곳(프로젝트 목록의 마지막 부분)을 직접 푸는 것만 1·2 를 준다.',
     '    - try 는 아껴 쓴다: 실제로 이번 주에 시간을 낼 가치가 있고 결과를 재서 판정할 수 있는 것만. "써 보면 좋을 것 같은" 소식은 try 가 아니라 a 다.',
@@ -172,7 +221,9 @@ export function buildPrompt(batch, projects, ratios, usage, guide = null) {
     '  하나의 항목에 후보가 여럿이면(도구 여러 개를 소개하는 글 등) 가장 먼저 해 볼 하나를 next 로, 경쟁 후보와 들이지 않을 것은 이유와 함께 reason 에 적는다.',
     '- d: 버릴 것. 다른 항목과 사실상 같은 내용(중복)이거나, 프로젝트 목록 어디에도 쓸모가 없고 알아 둘 가치도 없는 것(광고·행사 홍보·잡담 등).',
     '판단 기준: 이번 주에 쓸 데가 있는가, 아래 프로젝트 중 어디에 붙는가. 이번 주에 쓸 데가 있고 프로젝트에 붙으면 c 또는 b 쪽으로, 쓸 데가 없으면 a 또는 d 쪽으로 기운다.',
-    'relevance 는 사용자가 이 노트를 저장하면서 직접 적은 «내 상황에서의 쓸모» 판단이다. 있으면 가장 무게를 둔다 — 거기서 가장 먼저 볼 만하다고 한 것은 c(try) 쪽으로, "들일 이유가 약하다" 라고 한 것은 a 또는 d 로, 그 판단을 reason 에 살린다. summary 보다 relevance 를 믿는다.',
+    'relevance 는 노트를 저장할 때 붙은 «내 상황에서의 쓸모» 메모이고, relevance_by 가 누가 썼는지 알려 준다.',
+    '- relevance_by "user": 사용자가 직접 적은 판단이다. 가장 무게를 둔다 — 거기서 가장 먼저 볼 만하다고 한 것은 c(try) 쪽으로, "들일 이유가 약하다" 라고 한 것은 a 또는 d 로, 그 판단을 reason 에 살린다. summary 보다 이 relevance 를 믿는다.',
+    '- relevance_by "ai": 저장 도구의 AI 가 붙인 추정이다. 사용자의 판단이 아니다. 어느 프로젝트와 닿을지 찾는 단서로만 쓰고, title·summary 와 맞는지 먼저 본다. 이것만 보고 c(try) 로 올리지 않는다.',
     `사용 신호: 항목의 usage.backlinks 는 볼트의 다른 노트가 이 노트를 [[링크]] 한 수, usage.projects 는 내 프로젝트 저장소 중 이 항목의 제목·파일명·링크를 언급한 프로젝트 수다. usage 가 없으면 둘 다 0 이다.`,
     `둘 이상의 프로젝트(usage.projects >= 2)에서 쓰이거나 자주 링크되는(usage.backlinks >= ${BACKLINK_HOT}) 지식은 내 것으로 만들 가치가 크다 — c(내 것으로 만들 것) 후보로 먼저 본다. 신호가 없다고 불리하게 보지는 않는다(새로 들어온 항목은 아직 쓰이지 않았을 뿐이다).`,
     `기대 비율(참고만): a ${pct(ratios.a)} / b ${pct(ratios.b)} / c ${pct(ratios.c)} / d ${pct(ratios.d)}. 이 비율을 맞추려고 억지로 분류하지 않는다. 항목 하나하나를 기준대로 판단하고, 비율은 한쪽으로 심하게 쏠렸을 때 다시 생각해 보는 눈금으로만 쓴다.`,
@@ -272,7 +323,7 @@ export async function triage(ctx, { week, now = new Date() } = {}) {
     const c = classified.get(it.id);
     const u = usage.get(it.id);
     const base = { id: it.id, title: it.title, url: it.url, source: it.source, date: it.date, ...(it.file ? { file: it.file } : {}),
-      ...(it.relevance ? { relevance: it.relevance } : {}),
+      ...(it.relevance ? { relevance: it.relevance, relevanceBy: it.relevanceBy } : {}),
       ...(u && (u.backlinks || u.projects) ? { usage: u } : {}) };
     return c ? { ...base, class: c.class, project: c.project, reason: c.reason, ...(c.minutes ? { minutes: c.minutes } : {}),
       ...(c.action ? { action: c.action } : {}), ...(c.next ? { pain: c.pain, next: c.next, check: c.check, priority: c.priority } : {}) }
