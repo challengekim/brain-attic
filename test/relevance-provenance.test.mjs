@@ -105,3 +105,24 @@ test('triageInputKey: changing triage.relevanceBy makes this week\'s saved triag
   assert.notEqual(k1, k2);
   assert.equal(k1, k3, 'unset and the default "ai" are the same input');
 });
+
+test('P2: only string markers count; malformed attic-save fields never become a user judgement; a moved or later-annotated memo stays the user\'s', () => {
+  const now = new Date();
+  const ctx = vaultWith({
+    'arr.md': { title: 'ARR', source: 'https://e.test/a1', my_relevance: 'x', relevance_by: ['user'] },
+    'bad.md': { title: 'BAD', source: 'attic save', url: true, summary: 42 },
+    'blank.md': { title: 'BLANK', source: 'attic save', url: 'https://e.test/b', summary: '   ' },
+    'ftp.md': { title: 'FTP', source: 'attic save', url: 'ftp://e.test/f', summary: '메모' },
+    'moved.md': { title: 'MOVED', source: 'attic save', url: 'https://e.test/m', summary: '옮긴 내 메모' },
+    'both.md': { title: 'BOTH', source: 'attic save', url: 'https://e.test/both', summary: '내 메모', my_relevance: 'AI 가 나중에 붙인 줄' },
+  }, { relevanceBy: ['user'] });
+  const t = byTitle(gatherItems(ctx, isoWeek(now), now));
+  assert.equal(t.ARR.relevanceBy, 'ai', 'an array marker and an array config value are ignored');
+  assert.equal(t.BAD.relevance, undefined, 'url: true / summary: 42 is not a saved memo');
+  assert.equal(t.BLANK.relevance, undefined);
+  assert.equal(t.FTP.relevance, undefined, 'only http(s) links');
+  assert.equal(t.MOVED.relevanceBy, 'user', 'an attic save note moved into an included folder keeps its memo');
+  assert.equal(t.MOVED.relevance, '옮긴 내 메모');
+  assert.equal(t.BOTH.relevanceBy, 'user', 'an unmarked AI line added later does not hide the memo');
+  assert.equal(t.BOTH.relevance, '내 메모');
+});

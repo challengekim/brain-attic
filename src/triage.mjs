@@ -63,14 +63,31 @@ export const RELEVANCE_AUTHORS = ['user', 'ai'];
  * treated as an AI guess, never as the owner's judgement (tell AI-written evidence from the original; prefer the original).
  */
 export function relevanceByOf(data, fallback = 'ai') {
-  const v = String(data?.relevance_by ?? '').trim().toLowerCase();
-  return RELEVANCE_AUTHORS.includes(v) ? v : fallback;
+  return authorOf(data?.relevance_by) || fallback;
+}
+
+/** 'user' | 'ai' from a string marker (any case); anything else (arrays, numbers, unknown words) -> null. */
+function authorOf(raw) {
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim().toLowerCase();
+  return RELEVANCE_AUTHORS.includes(v) ? v : null;
+}
+
+/**
+ * The memo the owner typed into `attic save <URL> <memo>` (frontmatter source "attic save", an http(s) url and a
+ * non-empty string summary), else ''. Recognised by the note itself, so a note moved into an included folder keeps it.
+ * A memo without a link is the content itself, not a judgement about something.
+ */
+export function savedMemoOf(data) {
+  if (data?.source !== 'attic save' || typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url.trim())) return '';
+  if (typeof data.summary !== 'string') return '';
+  const memo = data.summary.replace(/\s+/g, ' ').trim();
+  return memo ? truncate(memo, 300) : '';
 }
 
 /** The vault's default author for unmarked relevance (config triage.relevanceBy). */
 export function defaultRelevanceBy(config) {
-  const v = String(config?.triage?.relevanceBy ?? '').trim().toLowerCase();
-  return RELEVANCE_AUTHORS.includes(v) ? v : 'ai';
+  return authorOf(config?.triage?.relevanceBy) || 'ai';
 }
 
 /** True only for relevance the owner wrote. Results saved before authors were recorded have none and do not count. */
@@ -114,11 +131,12 @@ export function gatherItems(ctx, week, now = new Date()) {
       const title = data.title || path.basename(file, '.md');
       let relevance = relevanceOf(data);
       let relevanceBy = relevance ? relevanceByOf(data, relevanceDefault) : null;
-      // `attic save <URL> <memo>`: the memo is the owner's own reason for keeping the link. A memo without a link is
-      // the content itself, not a judgement about something.
-      if (!relevance && source === 'saved' && data.source === 'attic save' && data.url && data.summary) {
-        relevance = truncate(String(data.summary).replace(/\s+/g, ' ').trim(), 300);
-        relevanceBy = relevanceByOf(data, 'user');
+      // `attic save <URL> <memo>`: the memo is the owner's own reason for keeping the link. It wins over a relevance
+      // line that is not marked as the owner's (e.g. one a tool added later).
+      const memo = savedMemoOf(data);
+      if (memo && relevanceBy !== 'user') {
+        relevance = memo;
+        relevanceBy = 'user'; // typed by the owner by definition; a relevance_by marker describes my_relevance, not the memo
       }
       items.push({
         title: String(title), url: data.url ? String(data.url) : (data.source && /^https?:\/\//.test(String(data.source)) ? String(data.source) : ''), source,
