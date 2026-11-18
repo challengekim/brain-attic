@@ -95,3 +95,13 @@ test('try ranking and the sheet: AI-written relevance neither lifts a try nor li
   assert.match(skipped, /SKIP-USER/);
   assert.doesNotMatch(skipped, /SKIP-AI/);
 });
+
+test('triageInputKey: changing triage.relevanceBy makes this week\'s saved triage stale', async () => {
+  const { triageInputKey } = await import('../src/triage.mjs');
+  const guide = { key: 'g' };
+  const k1 = triageInputKey(testCtx({ config: { triage: {} } }), guide);
+  const k2 = triageInputKey(testCtx({ config: { triage: { relevanceBy: 'user' } } }), guide);
+  const k3 = triageInputKey(testCtx({ config: { triage: { relevanceBy: 'ai' } } }), guide);
+  assert.notEqual(k1, k2);
+  assert.equal(k1, k3, 'unset and the default "ai" are the same input');
+});

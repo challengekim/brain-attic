@@ -85,13 +85,13 @@ function excludedPrefixes(ctx) {
 }
 
 /**
- * Fingerprint of everything outside the notes that changes the classification (exclusions, project list, and the
+ * Fingerprint of everything outside the notes that changes the classification (exclusions, project list, who wrote unmarked relevance, and the
  * feedback guide: approved rules, the owner's recent answers, the system context).
  */
 export function triageInputKey(ctx, guide = guideFor(ctx)) {
   let projects = '';
   try { projects = fs.readFileSync(projectsFileOf(ctx), 'utf8'); } catch { /* none */ }
-  return sha256(JSON.stringify({ exclude: [...excludedPrefixes(ctx)].sort(), projects, guide: guide.key })).slice(0, 12);
+  return sha256(JSON.stringify({ exclude: [...excludedPrefixes(ctx)].sort(), projects, guide: guide.key, relevanceBy: defaultRelevanceBy(ctx.config) })).slice(0, 12);
 }
 
 export function gatherItems(ctx, week, now = new Date()) {
